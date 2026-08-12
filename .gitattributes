@@ -1,0 +1,19 @@
+# Normalise line endings. Shell scripts and Dockerfiles MUST be LF or they fail
+# on Linux with "bad interpreter" / broken RUN steps.
+* text=auto eol=lf
+
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.sql       text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Binaries
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff binary
+*.woff2 binary
