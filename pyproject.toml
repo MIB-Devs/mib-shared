@@ -25,3 +25,8 @@ include = ["mib_shared*"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# Pinned explicitly so a newer ruff release cannot silently change what CI
+# enforces. Add rules deliberately, not by upgrading the tool.
+select = ["E", "F", "I", "B", "UP"]

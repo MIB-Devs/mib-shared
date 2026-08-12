@@ -13,8 +13,8 @@ from mib_shared.telemetry import configure_logging, get_logger
 
 __all__ = [
     "ErrorEnvelope",
-    "install_error_handlers",
     "TracedClient",
     "configure_logging",
     "get_logger",
+    "install_error_handlers",
 ]
