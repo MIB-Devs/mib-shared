@@ -18,5 +18,10 @@ jobs:
           pip install .[dev]
       - name: Lint
         run: ruff check .
+
+      - name: No outbound call without a timeout (FR-BE-21)
+        # The library ships this check for every service to run; it has to hold
+        # for the library itself first.
+        run: mib-check-timeouts src tests
       - name: Test
         run: pytest -q

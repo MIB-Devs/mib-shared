@@ -29,7 +29,9 @@ def _app(*checks: ReadinessCheck, overall_timeout: float = 1.0) -> FastAPI:
 
 async def _get(app: FastAPI, path: str) -> httpx.Response:
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", timeout=5.0
+    ) as client:
         return await client.get(path)
 
 
