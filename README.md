@@ -53,6 +53,31 @@ new version, never a moved tag.
 | `0.1.0` | Scaffold: auth verification, error envelope, telemetry, HTTP client |
 | `0.2.0` | Bounded readiness probes (#3); W3C trace propagation, the error envelope with `trace_id`, the traced client with timeout/retry/fallback, and `mib-check-timeouts` (#2) |
 
+### Migrating to a published wheel later
+
+The git-tag pin is the cheapest thing that works while the repo is private; it is
+not a dead end. What makes a later move cheap is that the **version** is the
+interface, not the transport:
+
+1. Add a release workflow here that triggers on a tag push and publishes the
+   wheel (GitHub Packages, or any private index). Consumers are untouched.
+2. Each service then switches one line, whenever it suits — the published wheel
+   carries the same version the tag did, so there is nothing to renumber and no
+   big-bang cutover:
+
+   ```toml
+   "mib-shared @ git+https://github.com/MIB-Devs/mib-shared@v0.2.0",  # before
+   "mib-shared==0.2.0",                                              # after
+   ```
+
+3. Auth keeps its shape: the same read-only token, with `read:packages` instead
+   of repo read. The BuildKit secret mount in each service Dockerfile does not
+   change — only the `pip` line inside it.
+
+Pinning commit SHAs or vendoring the source would both break that property, which
+is why neither is used: a SHA has no version identity to migrate, and a vendored
+copy has none at all.
+
 ## Tracing and the error envelope
 
 Every service mounts the middleware and the handlers, in this order:
