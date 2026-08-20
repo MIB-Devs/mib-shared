@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mib-shared"
 version = "0.1.0"
-description = "MIB cross-cutting mechanics: auth, error envelope, telemetry, readiness probes, traced HTTP client. No domain logic."
+description = "MIB cross-cutting mechanics: auth, error envelope, telemetry and tracing, readiness probes, traced HTTP client. No domain logic."
 requires-python = ">=3.12"
 dependencies = [
     "anyio>=4.2",
@@ -18,6 +18,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+# Every service's CI runs this over its own source: an outbound call without a
+# timeout fails the build rather than being caught in review (FR-BE-21).
+mib-check-timeouts = "mib_shared.lint:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
