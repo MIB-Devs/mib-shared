@@ -20,6 +20,39 @@ pip install .[dev]
 pytest -q
 ```
 
+## Releasing, and how services pin it
+
+The library is private, so a service cannot `pip install mib-shared` from an
+index. Services pin a **git tag** instead (§8.3 — every service depends on a
+pinned version, never `main`):
+
+```toml
+dependencies = [
+    "mib-shared @ git+https://github.com/MIB-Devs/mib-shared@v0.2.0",
+]
+```
+
+CI and image builds authenticate with an org-level fine-grained PAT
+(`MIB_CI_TOKEN`, read-only, `mib-shared` only) — see a consumer's `ci.yml` for
+the three lines involved. If `mib-shared` ever becomes internal or public, the
+same pin works with the token removed.
+
+To cut a release: bump `version` in `pyproject.toml` and `__version__` in
+`src/mib_shared/__init__.py` together, merge, then tag the merge commit:
+
+```bash
+git tag -a v0.2.0 -m "mib-shared 0.2.0" && git push origin v0.2.0
+```
+
+Tags are immutable once a service pins them. Re-pointing a tag would change what
+a service installs without changing its lockfile or its pin, so a correction is a
+new version, never a moved tag.
+
+| Version | Contents |
+|---|---|
+| `0.1.0` | Scaffold: auth verification, error envelope, telemetry, HTTP client |
+| `0.2.0` | Bounded readiness probes (#3); W3C trace propagation, the error envelope with `trace_id`, the traced client with timeout/retry/fallback, and `mib-check-timeouts` (#2) |
+
 ## Tracing and the error envelope
 
 Every service mounts the middleware and the handlers, in this order:
