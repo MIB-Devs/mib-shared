@@ -1,9 +1,13 @@
+import json
+
 import httpx
 import pytest
+import structlog
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from mib_shared.errors import install_error_handlers
+from mib_shared.telemetry import configure_logging
 from mib_shared.tracing import TracingMiddleware
 
 INBOUND = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
@@ -88,3 +92,31 @@ async def test_validation_error_reports_fields_without_echoing_values():
 async def test_envelope_omits_absent_fields_rather_than_sending_nulls():
     resp = await _request("GET", "/missing")
     assert "details" not in resp.json()
+
+
+# --- the 500 has to be greppable by the reference it hands out --------------
+
+@pytest.mark.anyio
+async def test_the_unhandled_error_log_line_carries_the_trace_id(capsys):
+    """Regression: the log line holding the stack had no trace_id.
+
+    ServerErrorMiddleware runs outside TracingMiddleware, so the contextvars are
+    already unbound when this handler logs. The envelope reads the ASGI scope and
+    survives; the log line did not. A user quoting a reference from the error page
+    would find no line matching it — with the traceback in the one line that was
+    missing it.
+    """
+    structlog.reset_defaults()
+    configure_logging("INFO")
+
+    resp = await _request("GET", "/boom", headers={"traceparent": INBOUND})
+    assert resp.status_code == 500
+    assert resp.json()["trace_id"] == TRACE_ID
+
+    line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert line["event"] == "unhandled_exception"
+    # The same id the client was handed, so one grep finds both.
+    assert line["trace_id"] == TRACE_ID
+    assert line["request_id"] == resp.json()["request_id"]
+    # And the stack is actually there to be read once found.
+    assert "RuntimeError: the database ate it" in line["exception"]
