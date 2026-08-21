@@ -22,20 +22,28 @@ pytest -q
 
 ## Releasing, and how services pin it
 
-The library is private, so a service cannot `pip install mib-shared` from an
-index. Services pin a **git tag** instead (§8.3 — every service depends on a
-pinned version, never `main`):
+This repo is **public**, so a service installs it with no credential at all.
+Services pin a **release tarball** (§8.3 — every service depends on a pinned
+version, never `main`):
 
 ```toml
 dependencies = [
-    "mib-shared @ git+https://github.com/MIB-Devs/mib-shared@v0.2.0",
+    "mib-shared @ https://github.com/MIB-Devs/mib-shared/archive/refs/tags/v0.2.0.tar.gz",
 ]
 ```
 
-CI and image builds authenticate with an org-level fine-grained PAT
-(`MIB_CI_TOKEN`, read-only, `mib-shared` only) — see a consumer's `ci.yml` for
-the three lines involved. If `mib-shared` ever becomes internal or public, the
-same pin works with the token removed.
+A tarball rather than `git+https` deliberately: pip fetches it over plain HTTPS,
+so no consumer needs a token in CI and no service image needs a `git` binary
+installed just to resolve one dependency.
+
+Public is what makes that true. `internal` visibility would not: an internal repo
+still needs authentication to clone, and Actions' `GITHUB_TOKEN` is scoped to its
+own repository, so a consumer could not read this one with it. (The repo setting
+reading "accessible from repositories in the organization" governs actions and
+reusable workflows, not git content — easy to misread as solving it.) This repo
+can be public because it is mechanics only: no domain logic, no schema, no
+business rules, nothing that is not already inferable from a FastAPI service's
+shape.
 
 To cut a release: bump `version` in `pyproject.toml` and `__version__` in
 `src/mib_shared/__init__.py` together, merge, then tag the merge commit:
@@ -45,8 +53,8 @@ git tag -a v0.2.0 -m "mib-shared 0.2.0" && git push origin v0.2.0
 ```
 
 Tags are immutable once a service pins them. Re-pointing a tag would change what
-a service installs without changing its lockfile or its pin, so a correction is a
-new version, never a moved tag.
+a service installs without changing its pin, so a correction is a new version,
+never a moved tag.
 
 | Version | Contents |
 |---|---|
@@ -55,28 +63,29 @@ new version, never a moved tag.
 
 ### Migrating to a published wheel later
 
-The git-tag pin is the cheapest thing that works while the repo is private; it is
-not a dead end. What makes a later move cheap is that the **version** is the
-interface, not the transport:
+The tarball pin is not a dead end. What makes a later move cheap is that the
+**version** is the interface, not the transport:
 
-1. Add a release workflow here that triggers on a tag push and publishes the
-   wheel (GitHub Packages, or any private index). Consumers are untouched.
-2. Each service then switches one line, whenever it suits — the published wheel
-   carries the same version the tag did, so there is nothing to renumber and no
-   big-bang cutover:
+1. Add a release workflow here that triggers on a tag push and publishes to PyPI.
+   Consumers are untouched until they choose to move.
+2. Each service then switches one line, whenever it suits — the wheel carries the
+   same version the tag did, so there is nothing to renumber and no cutover:
 
    ```toml
-   "mib-shared @ git+https://github.com/MIB-Devs/mib-shared@v0.2.0",  # before
-   "mib-shared==0.2.0",                                              # after
+   "mib-shared @ https://github.com/.../v0.2.0.tar.gz",  # before
+   "mib-shared==0.2.0",                                  # after
    ```
 
-3. Auth keeps its shape: the same read-only token, with `read:packages` instead
-   of repo read. The BuildKit secret mount in each service Dockerfile does not
-   change — only the `pip` line inside it.
+Note that **GitHub Packages has no Python registry** — it hosts npm, Maven,
+NuGet, RubyGems and containers — so the realistic targets are PyPI (public, no
+credential for consumers, publish token needed here) or a private index such as
+CodeArtifact or Artifactory (a credential for every consumer, which is the thing
+going public just removed). PyPI would also mean claiming the `mib-shared` name,
+which is not reserved today.
 
-Pinning commit SHAs or vendoring the source would both break that property, which
-is why neither is used: a SHA has no version identity to migrate, and a vendored
-copy has none at all.
+Pinning commit SHAs or vendoring the source would both break the version-as-
+interface property, which is why neither is used: a SHA has no version identity
+to migrate, and a vendored copy has none at all.
 
 ## Tracing and the error envelope
 
