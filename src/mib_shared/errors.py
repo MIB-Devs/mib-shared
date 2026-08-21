@@ -94,10 +94,17 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
         env = _envelope(request, "internal_error", "An unexpected error occurred.")
-        # Logged with the trace_id so the generic message the user sees can be
-        # tied to the actual stack by the reference they quote.
+        # trace_id and request_id are passed EXPLICITLY rather than relied on from
+        # the logging context. Starlette's ServerErrorMiddleware sits outside
+        # TracingMiddleware, so by the time this handler runs the contextvars have
+        # been unbound and merge_contextvars contributes nothing. The envelope
+        # still has them (it reads the ASGI scope), so without this the 500 that
+        # hands a user a reference is the one log line that never mentions it —
+        # exactly the line support needs when they quote it back (FR-BE-12).
         logger.exception(
             "unhandled_exception",
+            trace_id=env.trace_id,
+            request_id=env.request_id,
             path=request.url.path,
             method=request.method,
             error_code=env.error_code,

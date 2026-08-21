@@ -6,7 +6,7 @@ probes, and the traced HTTP client. It must never carry domain logic or ORM
 models — a shared library that knows about regulations is a distributed
 monolith wearing four containers.
 """
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 from mib_shared.errors import ErrorEnvelope, install_error_handlers
 from mib_shared.http_client import (
