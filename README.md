@@ -34,8 +34,16 @@ dependencies = [
 
 CI and image builds authenticate with an org-level fine-grained PAT
 (`MIB_CI_TOKEN`, read-only, `mib-shared` only) — see a consumer's `ci.yml` for
-the three lines involved. If `mib-shared` ever becomes internal or public, the
-same pin works with the token removed.
+the three lines involved.
+
+**A credential is required unless the repo is fully public.** `internal`
+visibility does not remove it: an internal repo still needs authentication to
+clone, and Actions' `GITHUB_TOKEN` is scoped to its own repository, so it cannot
+read this one. (The repo setting reading "accessible from repositories in the
+organization" governs actions and reusable workflows, not git content — it is
+easy to misread as solving this.) A fine-grained PAT also belongs to a *person*,
+so consider a GitHub App installation token before seven repos depend on one
+individual's credential.
 
 To cut a release: bump `version` in `pyproject.toml` and `__version__` in
 `src/mib_shared/__init__.py` together, merge, then tag the merge commit:
@@ -60,7 +68,7 @@ not a dead end. What makes a later move cheap is that the **version** is the
 interface, not the transport:
 
 1. Add a release workflow here that triggers on a tag push and publishes the
-   wheel (GitHub Packages, or any private index). Consumers are untouched.
+   wheel. Consumers are untouched.
 2. Each service then switches one line, whenever it suits — the published wheel
    carries the same version the tag did, so there is nothing to renumber and no
    big-bang cutover:
@@ -70,9 +78,20 @@ interface, not the transport:
    "mib-shared==0.2.0",                                              # after
    ```
 
-3. Auth keeps its shape: the same read-only token, with `read:packages` instead
-   of repo read. The BuildKit secret mount in each service Dockerfile does not
-   change — only the `pip` line inside it.
+Where it can be published, and what that costs in credentials — **GitHub
+Packages hosts npm, Maven, NuGet, RubyGems and containers, but no Python
+registry**, so it is not an option here:
+
+| Target | Credential |
+|---|---|
+| Release asset on this repo | the same read-only token |
+| AWS CodeArtifact, Azure Artifacts, Artifactory, Gemfury | that service's own credential |
+| Public PyPI | none |
+
+So a pipeline changes the *shape* of the secret, never removes it. The token is
+the cost of the library not being public, not the cost of installing over git.
+The BuildKit secret mount in each service Dockerfile is unaffected either way —
+only the `pip` line inside it changes.
 
 Pinning commit SHAs or vendoring the source would both break that property, which
 is why neither is used: a SHA has no version identity to migrate, and a vendored
