@@ -17,7 +17,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.5"]
+# Only the four services that own a schema need these, and they already declare
+# them. Kept as an extra rather than a hard dependency so the three services with
+# no migrations do not inherit SQLAlchemy and Alembic; `mib_shared/__init__.py`
+# deliberately does not import `mib_shared.migrations`.
+migrations = ["sqlalchemy>=2.0", "alembic>=1.13"]
+dev = ["pytest>=8.0", "ruff>=0.5", "sqlalchemy>=2.0", "alembic>=1.13"]
 
 [project.scripts]
 # Every service's CI runs this over its own source: an outbound call without a

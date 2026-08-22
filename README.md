@@ -60,6 +60,10 @@ never a moved tag.
 |---|---|
 | `0.1.0` | Scaffold: auth verification, error envelope, telemetry, HTTP client |
 | `0.2.0` | Bounded readiness probes (#3); W3C trace propagation, the error envelope with `trace_id`, the traced client with timeout/retry/fallback, and `mib-check-timeouts` (#2) |
+| `0.2.1` | `configure_logging` renders tracebacks — `log.exception` was emitting `"exc_info": true` and discarding the stack |
+| `0.2.2` | The 500 handler passes `trace_id` and `request_id` explicitly, so the log line for an unhandled exception carries them |
+| `0.3.0` | Local token verification, capability checks, service credentials, and the JWKS cache (#1) |
+| `0.4.0` | `mib_shared.migrations`: shared Alembic naming convention, options, and the `own_tables_only` autogenerate filter (#12 pending) |
 
 ### Migrating to a published wheel later
 
@@ -263,6 +267,78 @@ app.include_router(
 ```
 
 > **Boundary rule:** if a change to this library forces every service to redeploy for a *domain* reason, the change does not belong here.
+
+## Migrations
+
+For the four services that own a schema — `mib-identity`, `mib-ai`,
+`mib-ingestion`, `mib-rag`. Their `migrations/env.py` files were byte-identical
+except for which schema and version table they named; this is that, once.
+
+```python
+# migrations/env.py
+from mib_shared.migrations import run_migrations
+from app.tables import metadata
+
+run_migrations(metadata=metadata)
+```
+
+```python
+# app/tables.py
+from mib_shared.migrations import schema_metadata
+
+metadata = schema_metadata("identity")   # naming convention comes with it
+users = Table("users", metadata, ...)
+```
+
+`run_migrations` reads `DATABASE_URL`, takes the schema from `metadata.schema`,
+and configures autogenerate. Pass `version_table=` only where two services share
+a schema: mib-ai keeps `alembic_version_ai` in `identity` so its history does not
+collide with mib-identity's.
+
+**Import it explicitly.** `mib_shared/__init__.py` does not, because this module
+needs SQLAlchemy and Alembic and the three services without migrations should not
+inherit them. Declare `mib-shared[migrations]` where you use it.
+
+### The one thing not to get wrong
+
+`include_schemas=True` makes Alembic reflect the whole database, and **anything
+it reflects but cannot find in `target_metadata` it proposes to DROP.** One schema
+here has two owners: `ai_summary_events` and `ai_summaries` belong to mib-ai but
+live in `identity` (`FR-BE-15`). So without a filter, autogenerate in
+mib-identity emits `drop_table` for mib-ai's tables, and autogenerate in mib-ai
+emits `drop_table` for `users`. Migrations run automatically on deploy, so that
+is data loss on the next release, not something review catches.
+
+`migration_options` installs `own_tables_only(metadata)` for exactly this reason.
+Every adopting service should keep two tests: one asserting the filter suppresses
+the drops, and one asserting that **removing** it brings them back. A safety test
+that passes vacuously is worse than none, because it reports a control that is
+not holding. `mib-identity/tests/test_schema.py` is the reference.
+
+### What the naming convention is for
+
+`NAMING_CONVENTION` reproduces the names PostgreSQL picks itself — `users_pkey`,
+`sso_sessions_user_id_fkey`, `plans_code_key`. That is deliberate and load
+bearing: it lets a service with hand-written DDL adopt metadata and regenerate
+its baseline with **no** change to the schema, which is what makes the
+regeneration reviewable. It also means a constraint added later without an
+explicit name still gets a name Alembic knows, so a later migration can drop it.
+
+Changing these patterns invalidates every adopting service's
+schema-equivalence proof at once. `tests/test_migrations.py` pins them.
+
+### What autogenerate will not do for you
+
+- **A rename reads as a drop plus an add.** The generated migration applies
+  cleanly and destroys the column's data. Rewrite it as
+  `op.alter_column(..., new_column_name=...)`.
+- Extensions (`CREATE EXTENSION vector`), schema creation, triggers, grants and
+  data migrations are invisible to it. `run_migrations(create_schema=True)`
+  handles the schema for a fresh dev database; the rest is hand-written.
+
+Table definitions stay in the owning service. They are domain, and holding them
+here would make every schema change a shared release plus a pin bump in seven
+repos (§8.3).
 
 ## Conventions
 
