@@ -87,6 +87,90 @@ Pinning commit SHAs or vendoring the source would both break the version-as-
 interface property, which is why neither is used: a SHA has no version identity
 to migrate, and a vendored copy has none at all.
 
+## Authentication
+
+Every service verifies tokens **locally** against mib-identity's published key —
+no network hop per request (`FR-SSO-02`):
+
+```python
+from typing import Annotated
+from fastapi import Depends
+from mib_shared import JWKSCache, Principal, require_capability
+
+keys = JWKSCache(jwks_url=settings.identity_jwks_url)
+
+Searcher = Annotated[
+    Principal,
+    Depends(require_capability("regulations.search", keys=keys,
+                               audience=settings.service_name,
+                               issuer=settings.jwt_issuer)),
+]
+
+@router.get("/search")
+async def search(principal: Searcher) -> dict:
+    ...
+```
+
+Three rules the library enforces rather than trusting callers to remember:
+
+- **Only asymmetric algorithms.** `HS256` with a public key is the classic
+  confusion attack — the verifier treats the *published* key as a shared secret,
+  so anyone who can read it can mint tokens. `none` likewise. The header's `alg`
+  is checked against an allowlist, not obeyed.
+- **`audience` is required, not optional.** A separate administrator audience is
+  what makes an admin token refused by public endpoints and vice versa
+  (`FR-SSO-11`), and that only works if every call states which audience it is.
+- **Entitlement is per capability, never a plan name** (`FR-SSO-03`). A token
+  claiming `plan: "enterprise"` grants nothing. Plans are versioned rows whose
+  capability set changes without a release; an endpoint checking a plan name
+  silently makes that untrue.
+
+Missing token → **401** with `WWW-Authenticate`. Authenticated but lacking the
+capability → **403**, because re-authenticating would not help and sending the
+client to log in again is a loop that cannot succeed.
+
+### Key caching
+
+`JWKSCache` turns key management into a caching problem with three traps, each
+handled deliberately:
+
+| Trap | Handling |
+|---|---|
+| **Rotation** | An unknown `kid` triggers a refresh even when the cache is fresh — otherwise a rotation is invisible for a whole TTL |
+| **Stampede** | Fetch attempts are rate limited, so random `kid`s cannot be used to amplify one request into an outbound call |
+| **Identity down** | A failed refresh **fails static**: keep verifying with cached keys. Only an empty cache rejects. An identity outage must not take every service's authentication with it — that is the point of verifying locally |
+
+One operational rule follows from the cooldown: **publish a key, then start
+signing with it.** Identity should add a key to the JWKS and wait longer than
+`min_refresh_interval` before issuing tokens against it. Then no cooldown length
+can cause a spurious rejection.
+
+### Service-to-service (`FR-BE-20`)
+
+Being on the internal network is not authentication — a compromised container is
+on it too:
+
+```python
+from mib_shared import ServiceCaller, require_service, service_call_headers
+
+# In mib-retrieval: callable by mib-ai and nothing else (FR-BE-22).
+Caller = Annotated[ServiceCaller, Depends(require_service({"mib-ai"}))]
+
+@router.post("/internal/v1/retrieve")
+async def retrieve(caller: Caller) -> dict:
+    ...
+
+# In mib-ai, calling it:
+await client.post("/internal/v1/retrieve", json=payload,
+                  headers=service_call_headers("mib-ai"))
+```
+
+Credentials come from `MIB_SERVICE_TOKEN_<CALLER>` environment variables and are
+compared in constant time. Every failure — unknown caller, missing credential,
+wrong token, or an authentic service that is not on this endpoint's allowlist —
+returns the **same** 403, so a caller cannot enumerate which services exist or
+which are configured.
+
 ## Tracing and the error envelope
 
 Every service mounts the middleware and the handlers, in this order:
