@@ -78,6 +78,36 @@ class JWKSCache:
     def _expired(self) -> bool:
         return (time.monotonic() - self._fetched_at) > self.ttl_seconds
 
+    @property
+    def has_keys(self) -> bool:
+        """Whether this process has ever successfully fetched.
+
+        The distinction readiness needs. Fail-static means an identity outage does
+        not stop a service verifying tokens — but that only holds for a process
+        holding keys. One that has *never* fetched cannot verify anything, and
+        reporting itself ready would mean accepting traffic it must refuse.
+
+        So: false here is a readiness failure; identity going down later is not.
+        """
+        return bool(self._keys)
+
+    async def warm(self) -> bool:
+        """Fetch at startup. Returns whether keys are available afterwards.
+
+        Best effort, and deliberately not fatal: a service that cannot reach
+        identity while starting should come up and report itself unready rather
+        than crash-looping, so an operator sees `/ready` explaining the problem
+        instead of a container restarting every few seconds.
+
+        Also removes a first-request cost — otherwise the first authenticated
+        request of a deploy pays for the fetch.
+        """
+        try:
+            await self._refresh()
+        except Exception as exc:  # pragma: no cover - _refresh already fails soft
+            logger.warning("jwks_warmup_failed", url=self.jwks_url, error=type(exc).__name__)
+        return self.has_keys
+
     async def get(self, kid: str | None) -> PyJWK:
         """The key for this ``kid``, fetching only when it might help."""
         key = self._keys.get(kid) if kid else self._single_key()

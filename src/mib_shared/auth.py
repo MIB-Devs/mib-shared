@@ -294,3 +294,45 @@ def service_call_headers(service_name: str, token: str | None = None) -> dict[st
 def has_capability(principal: Principal, capability: str) -> bool:
     """Kept for callers written against the scaffold's function form."""
     return principal.has(capability)
+
+
+def optional_principal(
+    *,
+    keys: KeyProvider,
+    audience: str,
+    issuer: str | None = None,
+):
+    """FastAPI dependency: the caller if they presented a token, otherwise None.
+
+    For endpoints that serve both visitors and members — a regulation page that
+    shows a preview to anyone and the full text to a subscriber (FR-REG-05,
+    FR-REG-20). Without this, each service writes its own try/except around
+    `verify_access_token` and they diverge on the case below.
+
+    **No credential means anonymous. A credential that does not verify is still a
+    401.** That asymmetry is the whole design of this function, so it is worth
+    being explicit about:
+
+    - A caller with no `Authorization` header is a visitor. Nothing has been
+      claimed, nothing failed, and they get the public view.
+    - A caller who presents a token is *asserting an identity*. If that assertion
+      is false — expired, wrong audience, bad signature — silently serving them
+      the visitor view hides the reason. The user sees a page that has forgotten
+      who they are and no explanation; the front end never learns to refresh; and
+      someone probing with malformed tokens gets no signal that anything is wrong.
+      A 401 tells the client exactly what to do, and refreshing then retrying is
+      one round trip.
+
+    The trade is that an expired token on a public page returns 401 rather than
+    quietly rendering the preview. That is the right way round: a client that
+    handles 401 by refreshing recovers in a way a silent downgrade never does.
+    """
+
+    async def _dependency(credentials: BearerCredentials) -> Principal | None:
+        if credentials is None or not credentials.credentials:
+            return None
+        return await verify_access_token(
+            credentials.credentials, keys=keys, audience=audience, issuer=issuer
+        )
+
+    return _dependency
