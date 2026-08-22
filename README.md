@@ -64,6 +64,7 @@ never a moved tag.
 | `0.2.2` | The 500 handler passes `trace_id` and `request_id` explicitly, so the log line for an unhandled exception carries them |
 | `0.3.0` | Local token verification, capability checks, service credentials, and the JWKS cache (#1) |
 | `0.4.0` | `mib_shared.migrations`: shared Alembic naming convention, options, and the `own_tables_only` autogenerate filter (#12 pending) |
+| `0.5.0` | `optional_principal` for endpoints serving visitors and members alike, plus `JWKSCache.has_keys` and `.warm()` so a service can report readiness on whether it can verify anything (#14) |
 
 ### Migrating to a published wheel later
 
@@ -148,6 +149,55 @@ One operational rule follows from the cooldown: **publish a key, then start
 signing with it.** Identity should add a key to the JWKS and wait longer than
 `min_refresh_interval` before issuing tokens against it. Then no cooldown length
 can cause a spurious rejection.
+
+### Endpoints that serve visitors and members alike
+
+`bearer_principal` refuses a caller with no token. Some endpoints must not — a
+regulation page shows a preview to anyone and the full text to a subscriber
+(`FR-REG-05`, `FR-REG-20`). That is `optional_principal`:
+
+```python
+maybe_caller = optional_principal(keys=keys, audience=AUDIENCE, issuer=ISSUER)
+
+@router.get("/regulations/{id}")
+async def detail(who: Annotated[Principal | None, Depends(maybe_caller)]):
+    return full_text(id) if who and who.has("regulations.read") else preview(id)
+```
+
+**No credential is anonymous; a credential that does not verify is still a 401.**
+The asymmetry is the point:
+
+- No `Authorization` header means a visitor. Nothing was claimed, nothing failed.
+- A caller who presents a token is *asserting an identity*. If that assertion is
+  false — expired, wrong audience, bad signature — serving the visitor view hides
+  the reason. The user gets a page that has forgotten them with no explanation,
+  the front end never learns to refresh, and someone probing with junk tokens
+  gets a uniformly friendly response.
+
+An expired token on a public page therefore returns 401 rather than quietly
+rendering the preview. That is the right way round: a client that handles 401 by
+refreshing and retrying recovers; a silent downgrade never does.
+
+### Readiness, when identity is unreachable
+
+Two different states, and only one of them is a readiness failure:
+
+| | Can it verify? | `/ready` |
+|---|---|---|
+| Never fetched the keys | no | **not ready** |
+| Fetched, identity now down | yes, from cache | ready |
+
+`JWKSCache.has_keys` is that distinction, so a readiness probe is one line:
+
+```python
+ReadinessCheck("identity_keys", lambda: keys.has_keys)
+```
+
+Call `await keys.warm()` in the app's lifespan. It is best-effort and never
+raises: a service that cannot reach identity while starting should come up and
+report itself unready, so an operator reads `/ready` rather than watching a
+container restart every few seconds. It also removes the first-request fetch cost
+after a deploy.
 
 ### Service-to-service (`FR-BE-20`)
 
