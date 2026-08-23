@@ -217,19 +217,37 @@ class ServiceCaller:
     name: str
 
 
-def _service_credentials(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Caller name → shared token, from ``MIB_SERVICE_TOKEN_<NAME>`` variables.
+def _service_credentials(env: dict[str, str] | None = None) -> dict[str, tuple[str, ...]]:
+    """Caller name → accepted tokens, from ``MIB_SERVICE_TOKEN_<NAME>`` variables.
 
     Read from the environment rather than a config object so this stays free of
     domain settings, and so rotating one caller's token does not require touching
     every service's configuration.
+
+    **A variable may hold several comma-separated tokens, and all of them are
+    accepted.** That exists for one reason: rotating a shared secret otherwise
+    requires both sides to restart at the same instant, and there is no such
+    instant. With an overlap window the sequence is safe at every step —
+
+    1. add the new token to the *receiver* alongside the old one, restart it
+    2. give the caller the new token, restart it
+    3. remove the old token from the receiver, restart it
+
+    — and at no point is a live caller presenting something the receiver refuses.
+    Costing one comma now beats discovering the problem during a rotation.
+
+    Empty entries are dropped, so a trailing comma or a half-edited variable
+    cannot become a credential that matches the empty string.
     """
     source = env if env is not None else os.environ
     prefix = "MIB_SERVICE_TOKEN_"
-    creds: dict[str, str] = {}
+    creds: dict[str, tuple[str, ...]] = {}
     for name, value in source.items():
-        if name.startswith(prefix) and value:
-            creds[name[len(prefix) :].lower().replace("_", "-")] = value
+        if not name.startswith(prefix) or not value:
+            continue
+        tokens = tuple(token.strip() for token in value.split(",") if token.strip())
+        if tokens:
+            creds[name[len(prefix) :].lower().replace("_", "-")] = tokens
     return creds
 
 
@@ -251,15 +269,20 @@ def require_service(
         name = (request.headers.get(SERVICE_HEADER) or "").strip().lower()
         presented = request.headers.get(SERVICE_TOKEN_HEADER) or ""
         credentials = _service_credentials(env)
-        expected = credentials.get(name)
+        accepted = credentials.get(name, ())
 
         # One rejection for every failure mode: unknown caller, no credential
         # configured, wrong token, or a caller that is authentic but not allowed
         # here. Distinguishing them in the response would let a caller enumerate
         # which services exist and which are configured.
-        ok = bool(name) and bool(presented) and expected is not None
+        ok = bool(name) and bool(presented) and bool(accepted)
         if ok:
-            ok = hmac.compare_digest(presented, expected)  # constant time
+            # Every candidate is compared, and the comparisons are not
+            # short-circuited on the first match: `any(...)` over a generator
+            # would stop early, and how long the loop ran would leak which
+            # position matched. Constant time per comparison, constant count.
+            matches = [hmac.compare_digest(presented, token) for token in accepted]
+            ok = any(matches)
         if ok:
             ok = name in permitted
 

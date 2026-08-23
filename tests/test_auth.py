@@ -10,8 +10,11 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
 
 from mib_shared.auth import (
+    SERVICE_HEADER,
+    SERVICE_TOKEN_HEADER,
     Principal,
     ServiceCaller,
     bearer_principal,
@@ -387,3 +390,81 @@ async def test_every_refusal_reads_the_same():
 def test_outbound_headers_name_the_caller_and_carry_the_token():
     headers = service_call_headers("mib-ai", token="ai-secret")
     assert headers == {"x-mib-service": "mib-ai", "x-mib-service-token": "ai-secret"}
+
+
+# --- credential rotation (FR-BE-20) ----------------------------------------
+
+
+def _service_app(env: dict[str, str], allowed: list[str]) -> TestClient:
+    application = FastAPI()
+
+    @application.get("/internal/thing")
+    async def thing(caller: ServiceCaller = Depends(require_service(allowed, env=env))):  # noqa: B008
+        return {"caller": caller.name}
+
+    return TestClient(application)
+
+
+def _call(client: TestClient, *, name: str, token: str):
+    return client.get(
+        "/internal/thing",
+        headers={SERVICE_HEADER: name, SERVICE_TOKEN_HEADER: token},
+    )
+
+
+def test_a_single_configured_token_is_accepted():
+    client = _service_app({"MIB_SERVICE_TOKEN_MIB_AI": "abc"}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="abc").json() == {"caller": "mib-ai"}
+
+
+def test_both_tokens_are_accepted_during_a_rotation():
+    """The overlap window that makes rotating a shared secret possible.
+
+    Without it, the old token and the new one cannot both be valid, so there is
+    no ordering of restarts that avoids refusing a live caller — the receiver and
+    the caller would have to change in the same instant, and there is no such
+    instant.
+    """
+    client = _service_app({"MIB_SERVICE_TOKEN_MIB_AI": "old-token,new-token"}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="old-token").status_code == 200
+    assert _call(client, name="mib-ai", token="new-token").status_code == 200
+
+
+def test_a_retired_token_stops_working_once_removed():
+    """The end of the rotation: dropping the old value must actually refuse it."""
+    client = _service_app({"MIB_SERVICE_TOKEN_MIB_AI": "new-token"}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="old-token").status_code == 403
+
+
+def test_whitespace_around_a_token_is_ignored():
+    """`.env` files get hand-edited, and a stray space must not break a caller."""
+    client = _service_app({"MIB_SERVICE_TOKEN_MIB_AI": " old , new "}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="old").status_code == 200
+    assert _call(client, name="mib-ai", token="new").status_code == 200
+
+
+def test_an_empty_entry_never_becomes_a_valid_credential():
+    """A trailing comma or a half-edited variable must not accept the empty
+    string, which is what a caller presenting no token would send."""
+    client = _service_app({"MIB_SERVICE_TOKEN_MIB_AI": "real,"}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="").status_code == 403
+    assert _call(client, name="mib-ai", token=" ").status_code == 403
+    assert _call(client, name="mib-ai", token="real").status_code == 200
+
+
+def test_a_variable_holding_only_separators_configures_nothing():
+    client = _service_app({"MIB_SERVICE_TOKEN_MIB_AI": " , "}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="").status_code == 403
+    assert _call(client, name="mib-ai", token="anything").status_code == 403
+
+
+def test_one_callers_token_does_not_work_for_another():
+    """Tokens are per caller. Otherwise `require_service(["mib-ai"])` would admit
+    anyone holding any service credential (FR-BE-22)."""
+    env = {
+        "MIB_SERVICE_TOKEN_MIB_AI": "ai-token",
+        "MIB_SERVICE_TOKEN_MIB_ADMIN": "admin-token",
+    }
+    client = _service_app(env, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="admin-token").status_code == 403
+    assert _call(client, name="mib-admin", token="admin-token").status_code == 403
