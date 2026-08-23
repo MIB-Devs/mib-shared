@@ -65,6 +65,7 @@ never a moved tag.
 | `0.3.0` | Local token verification, capability checks, service credentials, and the JWKS cache (#1) |
 | `0.4.0` | `mib_shared.migrations`: shared Alembic naming convention, options, and the `own_tables_only` autogenerate filter (#12 pending) |
 | `0.5.0` | `optional_principal` for endpoints serving visitors and members alike, plus `JWKSCache.has_keys` and `.warm()` so a service can report readiness on whether it can verify anything (#14) |
+| `0.6.0` | `MIB_SERVICE_TOKEN_<NAME>` accepts several comma-separated tokens, so a service credential can be rotated with an overlap window (#15) |
 
 ### Migrating to a published wheel later
 
@@ -317,6 +318,38 @@ app.include_router(
 ```
 
 > **Boundary rule:** if a change to this library forces every service to redeploy for a *domain* reason, the change does not belong here.
+
+### Rotating a service credential
+
+`MIB_SERVICE_TOKEN_<NAME>` may hold **several comma-separated tokens, and all of
+them are accepted.** That exists for one reason: rotating a shared secret
+otherwise requires both sides to restart at the same instant, and there is no
+such instant.
+
+With an overlap window every step is safe:
+
+```bash
+# 1. the receiver accepts both, old first so nothing in flight breaks
+MIB_SERVICE_TOKEN_MIB_AI=old-token,new-token     # restart the receiver
+
+# 2. the caller starts presenting the new one
+MIB_SERVICE_TOKEN=new-token                      # restart the caller
+
+# 3. the receiver stops accepting the old one
+MIB_SERVICE_TOKEN_MIB_AI=new-token               # restart the receiver
+```
+
+At no point is a live caller presenting something the receiver refuses. Skipping
+the overlap means a window where one side has rotated and the other has not, and
+every call in it fails.
+
+Empty entries are dropped, so a trailing comma or a half-edited variable cannot
+become a credential that matches the empty string — which is exactly what a
+caller presenting no token sends.
+
+Every candidate is compared, and the comparisons are deliberately **not**
+short-circuited on the first match: stopping early would make the number of
+comparisons depend on which position matched, and that is observable.
 
 ## Migrations
 
