@@ -1,0 +1,68 @@
+name: Publish image
+
+# Reusable workflow (MIB-Devs/mib-infra#30). Each service repo's own
+# publish.yml calls this on a version tag rather than re-implementing the
+# build-and-push steps five times. Runs in the CALLING repo's context —
+# actions/checkout with no `repository:` input checks out the caller, and
+# secrets.GITHUB_TOKEN below is the caller's own auto-issued token, not
+# mib-shared's — so no cross-repo credential is needed.
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Image name under ghcr.io/mib-devs/, e.g. "mib-identity"
+        required: true
+        type: string
+      context:
+        description: Docker build context, relative to the caller repo root
+        required: false
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the image tag from the pushed ref
+        # .env.example / scripts/deploy.sh take a plain semver
+        # (MIB_<SERVICE>_TAG=0.1.0); git tags use the v-prefixed convention
+        # (v0.1.0). Strip the "v" once here so every service publishes to the
+        # exact format deploy.sh already expects, settling the ambiguity
+        # mib-infra#30 called out instead of leaving each repo to guess.
+        id: tag
+        run: |
+          ref="${GITHUB_REF#refs/tags/}"
+          echo "value=${ref#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          push: true
+          tags: |
+            ghcr.io/mib-devs/${{ inputs.image }}:${{ steps.tag.outputs.value }}
+            ghcr.io/mib-devs/${{ inputs.image }}:latest
+
+      - name: Report the resolvable digest
+        # NFR-46 wants images digest-pinned in production; this is the digest
+        # that pin should use (docker/build-push-action's own output, not a
+        # digest re-derived from a separate pull).
+        run: |
+          echo "::notice::published ghcr.io/mib-devs/${{ inputs.image }}@${{ steps.build.outputs.digest }}"
