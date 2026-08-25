@@ -6,6 +6,11 @@ name: Publish image
 # actions/checkout with no `repository:` input checks out the caller, and
 # secrets.GITHUB_TOKEN below is the caller's own auto-issued token, not
 # mib-shared's — so no cross-repo credential is needed.
+#
+# The published image tag is the git tag verbatim (v0.1.0 stays v0.1.0) —
+# mib-infra's MIB_<SERVICE>_TAG values and scripts/deploy.sh were updated to
+# match, rather than stripping the "v" here, so the format is consistent
+# with the git tagging convention across every repo.
 
 on:
   workflow_call:
@@ -30,17 +35,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve the image tag from the pushed ref
-        # .env.example / scripts/deploy.sh take a plain semver
-        # (MIB_<SERVICE>_TAG=0.1.0); git tags use the v-prefixed convention
-        # (v0.1.0). Strip the "v" once here so every service publishes to the
-        # exact format deploy.sh already expects, settling the ambiguity
-        # mib-infra#30 called out instead of leaving each repo to guess.
-        id: tag
-        run: |
-          ref="${GITHUB_REF#refs/tags/}"
-          echo "value=${ref#v}" >> "$GITHUB_OUTPUT"
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -57,7 +51,7 @@ jobs:
           context: ${{ inputs.context }}
           push: true
           tags: |
-            ghcr.io/mib-devs/${{ inputs.image }}:${{ steps.tag.outputs.value }}
+            ghcr.io/mib-devs/${{ inputs.image }}:${{ github.ref_name }}
             ghcr.io/mib-devs/${{ inputs.image }}:latest
 
       - name: Report the resolvable digest
