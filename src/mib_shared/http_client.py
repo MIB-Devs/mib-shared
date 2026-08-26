@@ -10,7 +10,7 @@ import anyio
 import httpx
 
 from mib_shared.telemetry import get_logger
-from mib_shared.tracing import TRACEPARENT_HEADER, current_context
+from mib_shared.tracing import TRACEPARENT_HEADER, current_context, new_trace_context
 
 logger = get_logger(__name__)
 
@@ -71,13 +71,25 @@ def _is_retryable_method(method: str, idempotent: bool | None) -> bool:
 def _traced_headers(headers: dict[str, str] | None) -> dict[str, str]:
     """Propagate the trace to the next hop (FR-BE-25).
 
-    The outbound call is a child span of the current request, so the receiving
-    service continues the same trace instead of starting its own.
+    Inside a request, the outbound call is a child span of it, so the receiving
+    service continues the same trace instead of starting its own. Outside a
+    request — a scheduled one-shot, an embedding worker, the maintenance
+    pipeline — there is no ambient context to extend, but the call still needs
+    a trace: a fresh one is started here so both sides of the call land in the
+    same trace instead of two unrelated ones.
+
+    This function only puts the header on the wire; it never binds the new
+    context onto the caller's own task, since that would be a surprising side
+    effect of making an HTTP call. A worker whose own log lines should join
+    that trace has to do so explicitly — wrap the run in
+    ``bind_context(new_trace_context())`` before making calls.
     """
     out = dict(headers or {})
+    if TRACEPARENT_HEADER in {k.lower() for k in out}:
+        return out
     ctx = current_context()
-    if ctx is not None and TRACEPARENT_HEADER not in {k.lower() for k in out}:
-        out[TRACEPARENT_HEADER] = ctx.child().traceparent()
+    new_ctx = ctx.child() if ctx is not None else new_trace_context()
+    out[TRACEPARENT_HEADER] = new_ctx.traceparent()
     return out
 
 

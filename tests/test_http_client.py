@@ -8,7 +8,7 @@ from mib_shared.http_client import (
     TracedAsyncClient,
     TracedClient,
 )
-from mib_shared.tracing import new_trace_context, trace_context
+from mib_shared.tracing import current_context, new_trace_context, parse_traceparent, trace_context
 
 INBOUND = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 NO_BACKOFF = RetryPolicy(attempts=3, backoff_seconds=0.0)
@@ -81,11 +81,33 @@ async def test_an_explicit_traceparent_from_the_caller_wins():
 
 
 @pytest.mark.anyio
-async def test_no_traceparent_is_invented_outside_a_trace():
+async def test_a_call_outside_a_trace_starts_its_own_instead_of_sending_none():
     transport, seen = _recording_transport(200)
     async with TracedAsyncClient("http://svc", transport=transport) as client:
         await client.get("/thing")
-    assert "traceparent" not in seen[0].headers
+    sent = seen[0].headers["traceparent"]
+    assert parse_traceparent(sent) is not None
+
+
+@pytest.mark.anyio
+async def test_the_started_trace_is_not_bound_onto_the_caller():
+    transport, seen = _recording_transport(200)
+    async with TracedAsyncClient("http://svc", transport=transport) as client:
+        await client.get("/thing")
+    # Sending a header is not the same as adopting it — a worker that wants its
+    # own logs on the trace has to bind_context() itself.
+    assert current_context() is None
+
+
+@pytest.mark.anyio
+async def test_two_calls_outside_a_trace_get_different_trace_ids():
+    transport, seen = _recording_transport(200, 200)
+    async with TracedAsyncClient("http://svc", transport=transport) as client:
+        await client.get("/thing")
+        await client.get("/thing")
+    first = parse_traceparent(seen[0].headers["traceparent"])
+    second = parse_traceparent(seen[1].headers["traceparent"])
+    assert first.trace_id != second.trace_id
 
 
 # --- bounded retries (FR-BE-21) --------------------------------------------
