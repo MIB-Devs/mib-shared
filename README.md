@@ -66,6 +66,7 @@ never a moved tag.
 | `0.4.0` | `mib_shared.migrations`: shared Alembic naming convention, options, and the `own_tables_only` autogenerate filter (#12 pending) |
 | `0.5.0` | `optional_principal` for endpoints serving visitors and members alike, plus `JWKSCache.has_keys` and `.warm()` so a service can report readiness on whether it can verify anything (#14) |
 | `0.6.0` | `MIB_SERVICE_TOKEN_<NAME>` accepts several comma-separated tokens, so a service credential can be rotated with an overlap window (#15) |
+| `0.7.0` | `mib_shared.embeddings.EmbeddingCaller`: one bounded call against an OpenAI-compatible embeddings endpoint (request/response contract and permanent/transient error classification), extracted out of `mib-rag` and `mib-retrieval`'s independently-written, near-identical clients. Batching, concurrency, and any circuit breaker stay in the consumer — this is the part of the call that was actually duplicated |
 
 ### Migrating to a published wheel later
 

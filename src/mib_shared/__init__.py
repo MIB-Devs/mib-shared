@@ -6,7 +6,7 @@ probes, and the traced HTTP client. It must never carry domain logic or ORM
 models — a shared library that knows about regulations is a distributed
 monolith wearing four containers.
 """
-__version__ = "0.3.0"
+__version__ = "0.7.0"
 
 from mib_shared.auth import (
     ALLOWED_ALGORITHMS,
@@ -19,6 +19,13 @@ from mib_shared.auth import (
     require_service,
     service_call_headers,
     verify_access_token,
+)
+from mib_shared.embeddings import (
+    MAX_EMBEDDING_BATCH,
+    EmbeddingCaller,
+    EmbeddingError,
+    PermanentEmbeddingError,
+    TransientEmbeddingError,
 )
 from mib_shared.errors import ErrorEnvelope, install_error_handlers
 from mib_shared.http_client import (
@@ -52,9 +59,13 @@ from mib_shared.tracing import (
 __all__ = [
     "ALLOWED_ALGORITHMS",
     "DEFAULT_TIMEOUT",
+    "MAX_EMBEDDING_BATCH",
+    "EmbeddingCaller",
+    "EmbeddingError",
     "ErrorEnvelope",
     "JWKSCache",
     "KeyUnavailable",
+    "PermanentEmbeddingError",
     "Principal",
     "ReadinessCheck",
     "ReadinessReport",
@@ -66,6 +77,7 @@ __all__ = [
     "TracedAsyncClient",
     "TracedClient",
     "TracingMiddleware",
+    "TransientEmbeddingError",
     "bearer_principal",
     "build_ops_router",
     "configure_logging",
