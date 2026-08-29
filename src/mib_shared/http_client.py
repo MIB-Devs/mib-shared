@@ -210,11 +210,18 @@ class TracedAsyncClient(_TracedBase):
                 await anyio.sleep(self._retry.delay_for(attempt))
                 continue
 
-            if attempt < attempts and self._should_retry_response(response):
+            if self._should_retry_response(response):
                 last = response
-                self._log_retry(method, url, attempt, status=response.status_code)
-                await anyio.sleep(self._retry.delay_for(attempt))
-                continue
+                if attempt < attempts:
+                    self._log_retry(method, url, attempt, status=response.status_code)
+                    await anyio.sleep(self._retry.delay_for(attempt))
+                    continue
+                if fallback is not None:
+                    # The retry budget is spent and the caller declared a
+                    # degraded path — a failing status is exactly the case
+                    # FR-BE-21's fallback exists for, same as a transport error.
+                    self._log_exhausted(method, url, attempts, response)
+                    return fallback(response)
             return response
 
         return self._give_up(method, url, attempts, last, fallback)
@@ -285,11 +292,15 @@ class TracedClient(_TracedBase):
                 time.sleep(self._retry.delay_for(attempt))
                 continue
 
-            if attempt < attempts and self._should_retry_response(response):
+            if self._should_retry_response(response):
                 last = response
-                self._log_retry(method, url, attempt, status=response.status_code)
-                time.sleep(self._retry.delay_for(attempt))
-                continue
+                if attempt < attempts:
+                    self._log_retry(method, url, attempt, status=response.status_code)
+                    time.sleep(self._retry.delay_for(attempt))
+                    continue
+                if fallback is not None:
+                    self._log_exhausted(method, url, attempts, response)
+                    return fallback(response)
             return response
 
         return self._give_up(method, url, attempts, last, fallback)
