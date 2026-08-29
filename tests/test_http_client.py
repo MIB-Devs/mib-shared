@@ -128,8 +128,9 @@ async def test_a_retryable_status_is_retried_then_returned():
     transport, seen = _recording_transport(503, 503, 503)
     async with TracedAsyncClient("http://svc", transport=transport, retry=NO_BACKOFF) as client:
         resp = await client.get("/thing")
-    # The budget is spent, so the last response is handed back rather than raised:
-    # the caller decides whether a 503 from a sibling is fatal to their own request.
+    # No fallback was supplied, so this is not a breaking change for existing
+    # call sites: the last response is handed back rather than raised, and the
+    # caller decides whether a 503 from a sibling is fatal to their own request.
     assert len(seen) == 3
     assert resp.status_code == 503
 
@@ -199,6 +200,36 @@ async def test_the_fallback_is_told_what_failed():
     assert isinstance(causes[0], httpx.ConnectError)
 
 
+@pytest.mark.anyio
+async def test_a_final_retryable_status_reaches_the_fallback():
+    transport, seen = _recording_transport(503, 503, 503)
+    async with TracedAsyncClient("http://svc", transport=transport, retry=NO_BACKOFF) as client:
+        result = await client.get("/embed", fallback=lambda _cause: "lexical")
+    assert len(seen) == 3
+    assert result == "lexical"
+
+
+@pytest.mark.anyio
+async def test_the_fallback_for_a_final_status_is_told_the_response():
+    transport, _ = _recording_transport(503, 503, 503)
+    causes = []
+    async with TracedAsyncClient("http://svc", transport=transport, retry=NO_BACKOFF) as client:
+        await client.get("/embed", fallback=lambda cause: causes.append(cause))
+    assert isinstance(causes[0], httpx.Response)
+    assert causes[0].status_code == 503
+
+
+@pytest.mark.anyio
+async def test_a_client_error_does_not_reach_the_fallback():
+    # A 404 is an answer, not a failure — routing it to a fallback would hide
+    # a real bug (e.g. a missing credential) as a degraded dependency.
+    transport, seen = _recording_transport(404)
+    async with TracedAsyncClient("http://svc", transport=transport, retry=NO_BACKOFF) as client:
+        resp = await client.get("/thing", fallback=lambda _cause: "lexical")
+    assert len(seen) == 1
+    assert resp.status_code == 404
+
+
 # --- the sync client behaves the same --------------------------------------
 
 def test_sync_client_retries_and_propagates():
@@ -215,3 +246,11 @@ def test_sync_client_falls_back():
     transport, _ = _failing_transport(httpx.ConnectError("refused"))
     with TracedClient("http://svc", transport=transport, retry=NO_BACKOFF) as client:
         assert client.get("/thing", fallback=lambda _c: None) is None
+
+
+def test_sync_client_final_retryable_status_reaches_the_fallback():
+    transport, seen = _recording_transport(503, 503, 503)
+    with TracedClient("http://svc", transport=transport, retry=NO_BACKOFF) as client:
+        result = client.get("/embed", fallback=lambda _cause: "lexical")
+    assert len(seen) == 3
+    assert result == "lexical"

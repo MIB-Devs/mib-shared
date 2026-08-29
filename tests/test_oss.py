@@ -88,18 +88,20 @@ def test_a_persistent_transport_failure_uses_the_fallback():
     assert response == "degraded"
 
 
-def test_a_persistent_5xx_status_is_returned_not_routed_to_the_fallback():
-    """The known gap `mib-shared#18` documents: a failing *status* (as
-    opposed to a transport error) is not itself routed to the fallback once
-    the retry budget is exhausted — the caller must check `status_code`
-    explicitly. Asserted here so a fix to that gap is a visible behavior
-    change in this client's own tests, not a silent one."""
+def test_a_persistent_5xx_status_is_routed_to_the_fallback():
+    """Fixed by `mib-shared#18`: a failing *status* left once the retry budget
+    is exhausted is now routed through the fallback the same as a transport
+    error — a dependency that is up but unhealthy answers 503, which is
+    exactly the case a caller's fallback exists to degrade around."""
     called = []
-    response = get_object(
-        build(lambda r: httpx.Response(503)), "k", fallback=lambda cause: called.append(cause)
-    )
-    assert response.status_code == 503
-    assert called == []
+
+    def fallback(cause):
+        called.append(cause)
+        return "degraded"
+
+    response = get_object(build(lambda r: httpx.Response(503)), "k", fallback=fallback)
+    assert response == "degraded"
+    assert called[0].status_code == 503
 
 
 @pytest.mark.parametrize(
