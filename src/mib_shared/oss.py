@@ -1,4 +1,4 @@
-"""Signed reads from a private Alibaba OSS bucket (FR-REG-17, NFR-11).
+"""Signed reads and writes against a private Alibaba OSS bucket (FR-REG-17, NFR-11).
 
 Generic mechanics only — a bucket, a key pair, and OSS's classic request
 signature. The artifact key *naming convention* (`v1/html/{id}`,
@@ -8,12 +8,16 @@ domain knowledge and stay out of this module, in each consuming service
 one HTTP call" and "batching, concurrency, orchestration".
 
 `mib-regulations` uses this to read `mib-ingestion`'s content artifacts
-(`mib-regulations#22`); `mib-ingestion` will use it to write them once its
-adapter/converter is built (`mib-ingestion#3`) — one signing implementation
-rather than two copies drifting apart.
+(`mib-regulations#22`); `mib-ingestion` uses it to write them
+(`mib-ingestion#3`) — one signing implementation rather than two copies
+drifting apart.
 
     GET {endpoint}/{key}
     Date: {RFC 1123 date}
+    Authorization: OSS {access_key_id}:{signature}
+
+    PUT {endpoint}/{key}
+    Date, Content-Type, Content-MD5 (both signed)
     Authorization: OSS {access_key_id}:{signature}
 
 Same conventions as the rest of this package: every call goes through
@@ -73,14 +77,22 @@ class OSSClient:
             transport=transport,
         )
 
-    def _authorization(self, *, verb: str, resource: str, date: str) -> str:
+    def _authorization(
+        self,
+        *,
+        verb: str,
+        resource: str,
+        date: str,
+        content_md5: str = "",
+        content_type: str = "",
+    ) -> str:
         """OSS's classic (v1) signature.
 
         HMAC-SHA1 over ``VERB\\nContent-MD5\\nContent-Type\\nDate\\nCanonicalizedResource``,
         base64-encoded. A body-less request (a GET) has nothing to put on the
         Content-MD5/Content-Type lines, so they are left empty.
         """
-        string_to_sign = f"{verb}\n\n\n{date}\n{resource}"
+        string_to_sign = f"{verb}\n{content_md5}\n{content_type}\n{date}\n{resource}"
         digest = hmac.new(
             self._access_key_secret.encode(), string_to_sign.encode(), hashlib.sha1
         ).digest()
@@ -104,6 +116,37 @@ class OSSClient:
         }
         return await self._http.get(
             f"/{key}", headers=headers, fallback=fallback, idempotent=True
+        )
+
+    async def put_object(
+        self, key: str, body: bytes, *, content_type: str, fallback: Any = None
+    ) -> Any:
+        """A PUT of one object, overwriting any object at `key`.
+
+        `Content-MD5` is sent and signed, so OSS rejects a body corrupted in
+        transit rather than storing it. Writing the same bytes to the same key
+        twice is harmless, so the PUT is retried like a GET. Returns the
+        `httpx.Response` (any status, for the caller to interpret), or
+        `fallback`'s result once the retry budget is exhausted (FR-BE-21).
+        """
+        key = key.lstrip("/")
+        resource = f"/{self._bucket}/{key}"
+        date = format_datetime(datetime.now(UTC), usegmt=True)
+        content_md5 = base64.b64encode(hashlib.md5(body).digest()).decode()
+        headers = {
+            "Date": date,
+            "Content-Type": content_type,
+            "Content-MD5": content_md5,
+            "Authorization": self._authorization(
+                verb="PUT",
+                resource=resource,
+                date=date,
+                content_md5=content_md5,
+                content_type=content_type,
+            ),
+        }
+        return await self._http.request(
+            "PUT", f"/{key}", headers=headers, content=body, fallback=fallback, idempotent=True
         )
 
     async def aclose(self) -> None:
