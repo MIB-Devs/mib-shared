@@ -118,3 +118,97 @@ def test_construction_requires_every_field(missing):
     kwargs[missing] = ""
     with pytest.raises(ValueError):
         OSSClient(**kwargs)
+
+
+def put_object(client: OSSClient, key: str, body: bytes, **kwargs):
+    async def run():
+        async with client:
+            return await client.put_object(key, body, **kwargs)
+
+    return anyio.run(run)
+
+
+def test_put_signs_content_md5_and_content_type():
+    """The write side (`mib-ingestion#3`): Content-MD5 and Content-Type are on
+    the signed string, so the signature is checked here against an
+    independently computed one rather than just its prefix."""
+    import base64
+    import hashlib
+    import hmac
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["headers"] = dict(request.headers)
+        seen["body"] = request.content
+        seen["url"] = str(request.url)
+        return httpx.Response(200)
+
+    body = b"<article><p>Pasal 1</p></article>"
+    response = put_object(
+        build(handler), "/v1/html/some-id", body, content_type="text/html; charset=utf-8"
+    )
+    assert response.status_code == 200
+    assert seen["method"] == "PUT"
+    assert seen["body"] == body
+    assert seen["url"].endswith("/v1/html/some-id")
+    headers = seen["headers"]
+    md5 = base64.b64encode(hashlib.md5(body).digest()).decode()
+    assert headers["content-md5"] == md5
+    assert headers["content-type"] == "text/html; charset=utf-8"
+    signed = (
+        f"PUT\n{md5}\ntext/html; charset=utf-8\n{headers['date']}\n"
+        "/mib-regulations-content/v1/html/some-id"
+    )
+    expected = base64.b64encode(
+        hmac.new(b"test-key-secret", signed.encode(), hashlib.sha1).digest()
+    ).decode()
+    assert headers["authorization"] == f"OSS test-key-id:{expected}"
+
+
+def test_get_signature_is_unchanged_by_the_put_parameters():
+    import base64
+    import hashlib
+    import hmac
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(request.headers)
+        return httpx.Response(200)
+
+    get_object(build(handler), "k")
+    signed = f"GET\n\n\n{seen['date']}\n/mib-regulations-content/k"
+    expected = base64.b64encode(
+        hmac.new(b"test-key-secret", signed.encode(), hashlib.sha1).digest()
+    ).decode()
+    assert seen["authorization"] == f"OSS test-key-id:{expected}"
+
+
+def test_put_is_retried_as_idempotent():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503 if len(calls) == 1 else 200)
+
+    response = put_object(build(handler), "k", b"x", content_type="text/plain")
+    assert response.status_code == 200
+    assert len(calls) == 2
+
+
+def test_put_routes_an_exhausted_budget_to_the_fallback():
+    response = put_object(
+        build(lambda r: httpx.Response(503)),
+        "k",
+        b"x",
+        content_type="text/plain",
+        fallback=lambda cause: None,
+    )
+    assert response is None
+
+
+def test_put_returns_a_4xx_as_is():
+    response = put_object(build(lambda r: httpx.Response(403)), "k", b"x", content_type="t/p")
+    assert response.status_code == 403
