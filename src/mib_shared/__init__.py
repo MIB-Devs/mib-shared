@@ -6,7 +6,7 @@ probes, and the traced HTTP client. It must never carry domain logic or ORM
 models — a shared library that knows about regulations is a distributed
 monolith wearing four containers.
 """
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 from mib_shared.auth import (
     ALLOWED_ALGORITHMS,
