@@ -29,13 +29,42 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import os
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from email.utils import format_datetime
 from typing import Any
 
+import anyio
 import httpx
 
 from mib_shared.http_client import RetryPolicy, TracedAsyncClient
+
+# A file body is read and sent in pieces of this size, never held whole.
+_FILE_CHUNK = 1024 * 1024
+
+
+class _FileBody:
+    """A file sent in chunks. Not a generator, so httpx lets it be iterated again:
+    each attempt of a retried PUT opens the file afresh and sends all of it."""
+
+    def __init__(self, path: os.PathLike[str]) -> None:
+        self._path = path
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async with await anyio.open_file(self._path, "rb") as f:
+            while chunk := await f.read(_FILE_CHUNK):
+                yield chunk
+
+
+def _file_md5_and_size(path: os.PathLike[str]) -> tuple[str, int]:
+    digest = hashlib.md5()
+    size = 0
+    with open(path, "rb") as f:
+        while chunk := f.read(_FILE_CHUNK):
+            digest.update(chunk)
+            size += len(chunk)
+    return base64.b64encode(digest.digest()).decode(), size
 
 
 class OSSClient:
@@ -119,7 +148,12 @@ class OSSClient:
         )
 
     async def put_object(
-        self, key: str, body: bytes, *, content_type: str, fallback: Any = None
+        self,
+        key: str,
+        body: bytes | os.PathLike[str],
+        *,
+        content_type: str,
+        fallback: Any = None,
     ) -> Any:
         """A PUT of one object, overwriting any object at `key`.
 
@@ -128,12 +162,26 @@ class OSSClient:
         twice is harmless, so the PUT is retried like a GET. Returns the
         `httpx.Response` (any status, for the caller to interpret), or
         `fallback`'s result once the retry budget is exhausted (FR-BE-21).
+
+        `body` may be a path to a file instead of bytes: the file is read in 1 MiB
+        pieces for its MD5 and again for the upload, with its `Content-Length`,
+        so a source of hundreds of MB never sits in memory (`mib-ingestion#75`).
         """
         key = key.lstrip("/")
         resource = f"/{self._bucket}/{key}"
         date = format_datetime(datetime.now(UTC), usegmt=True)
-        content_md5 = base64.b64encode(hashlib.md5(body).digest()).decode()
+        extra: dict[str, str] = {}
+        content: bytes | _FileBody
+        if isinstance(body, os.PathLike):
+            content_md5, size = await anyio.to_thread.run_sync(_file_md5_and_size, body)
+            # Set explicitly, so httpx sends a sized body rather than chunked.
+            extra["Content-Length"] = str(size)
+            content = _FileBody(body)
+        else:
+            content_md5 = base64.b64encode(hashlib.md5(body).digest()).decode()
+            content = body
         headers = {
+            **extra,
             "Date": date,
             "Content-Type": content_type,
             "Content-MD5": content_md5,
@@ -146,7 +194,7 @@ class OSSClient:
             ),
         }
         return await self._http.request(
-            "PUT", f"/{key}", headers=headers, content=body, fallback=fallback, idempotent=True
+            "PUT", f"/{key}", headers=headers, content=content, fallback=fallback, idempotent=True
         )
 
     async def aclose(self) -> None:

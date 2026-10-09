@@ -212,3 +212,42 @@ def test_put_routes_an_exhausted_budget_to_the_fallback():
 def test_put_returns_a_4xx_as_is():
     response = put_object(build(lambda r: httpx.Response(403)), "k", b"x", content_type="t/p")
     assert response.status_code == 403
+
+
+def test_put_from_a_file_sends_it_sized_with_its_md5(tmp_path):
+    """`mib-ingestion#75`: a source is uploaded from disk, never held whole."""
+    import base64
+    import hashlib
+
+    from mib_shared import oss
+
+    body = bytes(range(256)) * (oss._FILE_CHUNK // 256 * 2 + 3)  # three chunks
+    path = tmp_path / "source.pdf"
+    path.write_bytes(body)
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["headers"] = dict(request.headers)
+        seen["body"] = request.content
+        return httpx.Response(200)
+
+    response = put_object(build(handler), "v1/source/x", path, content_type="application/pdf")
+    assert response.status_code == 200
+    assert seen["body"] == body
+    assert seen["headers"]["content-length"] == str(len(body))
+    assert "transfer-encoding" not in seen["headers"]
+    assert seen["headers"]["content-md5"] == base64.b64encode(hashlib.md5(body).digest()).decode()
+
+
+def test_a_retried_put_from_a_file_resends_it_whole(tmp_path):
+    path = tmp_path / "source.pdf"
+    path.write_bytes(b"%PDF-1.4 " + b"x" * 5000)
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(request.content)
+        return httpx.Response(503 if len(bodies) == 1 else 200)
+
+    response = put_object(build(handler), "k", path, content_type="application/pdf")
+    assert response.status_code == 200
+    assert bodies == [path.read_bytes(), path.read_bytes()]

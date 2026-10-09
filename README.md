@@ -69,6 +69,7 @@ never a moved tag.
 | `0.7.0` | `mib_shared.embeddings.EmbeddingCaller`: one bounded call against an OpenAI-compatible embeddings endpoint (request/response contract and permanent/transient error classification), extracted out of `mib-rag` and `mib-retrieval`'s independently-written, near-identical clients. Batching, concurrency, and any circuit breaker stay in the consumer — this is the part of the call that was actually duplicated |
 | `0.8.0` | `mib_shared.oss.OSSClient`: signed reads from a private Alibaba OSS bucket (OSS's classic HMAC-SHA1 request signature). Artifact key naming and bucket/credential values stay in each consuming service — `mib-regulations#22` is the first consumer, `mib-ingestion` a planned second (write side) |
 | `0.9.0` | `OSSClient.put_object`: signed writes (Content-MD5 and Content-Type signed, retried as idempotent, fallback after the budget). The write side `mib-ingestion#3` needs for its content artifacts |
+| `0.10.0` | `OSSClient.put_object` also takes a file path: MD5 and upload read the file in 1 MiB pieces, with `Content-Length`, and a retry resends it whole. For `mib-ingestion#75`, whose largest source is 451 MB |
 
 ### Migrating to a published wheel later
 
