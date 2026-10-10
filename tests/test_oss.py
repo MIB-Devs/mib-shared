@@ -251,3 +251,160 @@ def test_a_retried_put_from_a_file_resends_it_whole(tmp_path):
     response = put_object(build(handler), "k", path, content_type="application/pdf")
     assert response.status_code == 200
     assert bodies == [path.read_bytes(), path.read_bytes()]
+
+
+def run(client: OSSClient, call):
+    async def go():
+        async with client:
+            return await call(client)
+
+    return anyio.run(go)
+
+
+_PAGE = """<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult>
+  <Name>mib-regulations-content</Name>
+  <Prefix>v1/text/</Prefix>
+  <Marker>{marker}</Marker>
+  <MaxKeys>2</MaxKeys>
+  <IsTruncated>{truncated}</IsTruncated>
+  {next}
+  {contents}
+</ListBucketResult>"""
+
+
+def _page(keys, *, marker="", next_marker=None) -> bytes:
+    contents = "".join(
+        f"<Contents><Key>{k}</Key><LastModified>2026-10-10T08:42:32.000Z</LastModified>"
+        f"<Size>{len(k)}</Size></Contents>"
+        for k in keys
+    )
+    nxt = f"<NextMarker>{next_marker}</NextMarker>" if next_marker else ""
+    truncated = "true" if next_marker else "false"
+    return _PAGE.format(marker=marker, truncated=truncated, next=nxt, contents=contents).encode()
+
+
+def test_delete_is_signed_and_returns_the_response():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(204)
+
+    resp = run(build(handler), lambda c: c.delete_object("/v1/text/id/old"))
+
+    assert resp.status_code == 204
+    assert seen["method"] == "DELETE"
+    assert seen["url"].endswith("/v1/text/id/old")
+    assert seen["auth"].startswith("OSS test-key-id:")
+
+
+def test_delete_signature_differs_from_get_for_the_same_key():
+    auths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        auths.append(request.headers.get("authorization"))
+        return httpx.Response(204 if request.method == "DELETE" else 200)
+
+    client = build(handler)
+
+    async def both(c: OSSClient):
+        await c.get_object("v1/text/id/old")
+        await c.delete_object("v1/text/id/old")
+
+    run(client, both)
+    assert auths[0] != auths[1]
+
+
+def test_delete_is_retried_and_routes_an_exhausted_budget_to_the_fallback():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503)
+
+    result = run(build(handler), lambda c: c.delete_object("k", fallback=lambda _c: "gave-up"))
+    assert result == "gave-up"
+    assert len(calls) == 2
+
+
+def test_list_sends_prefix_marker_and_max_keys_and_parses_the_page():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["params"] = dict(request.url.params)
+        body = _page(["v1/text/a/1", "v1/text/b/2"], next_marker="v1/text/b/2")
+        return httpx.Response(200, content=body)
+
+    page = run(build(handler), lambda c: c.list_objects("v1/text/", marker="m", max_keys=2))
+
+    assert seen["path"] == "/"
+    assert seen["params"] == {"prefix": "v1/text/", "marker": "m", "max-keys": "2"}
+    assert [e.key for e in page.entries] == ["v1/text/a/1", "v1/text/b/2"]
+    assert page.entries[0].size == len("v1/text/a/1")
+    assert page.entries[0].last_modified.tzinfo is not None
+    assert page.next_marker == "v1/text/b/2"
+
+
+def test_the_last_page_has_no_next_marker():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_page(["v1/text/a/1"]))
+
+    page = run(build(handler), lambda c: c.list_objects("v1/text/"))
+    assert page.next_marker is None
+
+
+def test_a_namespaced_listing_is_parsed_too():
+    body = _page(["v1/text/a/1"]).replace(
+        b"<ListBucketResult>", b'<ListBucketResult xmlns="http://doc.oss-cn-hangzhou.aliyuncs.com">'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    page = run(build(handler), lambda c: c.list_objects("v1/text/"))
+    assert [e.key for e in page.entries] == ["v1/text/a/1"]
+
+
+def test_a_denied_listing_raises_rather_than_reading_as_empty():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, content=b"<Error><Code>AccessDenied</Code></Error>")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        run(build(handler), lambda c: c.list_objects("v1/text/"))
+
+
+def test_list_routes_an_exhausted_budget_to_the_fallback():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    result = run(build(handler), lambda c: c.list_objects("p", fallback=lambda _c: None))
+    assert result is None
+
+
+@pytest.mark.parametrize("max_keys", [0, 1001])
+def test_list_refuses_a_page_size_oss_would_not_honour(max_keys):
+    with pytest.raises(ValueError):
+        run(build(lambda r: httpx.Response(200)), lambda c: c.list_objects("p", max_keys=max_keys))
+
+
+def test_iter_objects_follows_the_marker_to_the_end():
+    pages = {
+        "": _page(["k1", "k2"], next_marker="k2"),
+        "k2": _page(["k3"], marker="k2"),
+    }
+    markers = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        marker = request.url.params.get("marker", "")
+        markers.append(marker)
+        return httpx.Response(200, content=pages[marker])
+
+    async def collect(c: OSSClient):
+        return [e.key async for e in c.iter_objects("")]
+
+    assert run(build(handler), collect) == ["k1", "k2", "k3"]
+    assert markers == ["", "k2"]

@@ -6,7 +6,7 @@ probes, and the traced HTTP client. It must never carry domain logic or ORM
 models — a shared library that knows about regulations is a distributed
 monolith wearing four containers.
 """
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 from mib_shared.auth import (
     ALLOWED_ALGORITHMS,
@@ -36,7 +36,7 @@ from mib_shared.http_client import (
     TracedClient,
 )
 from mib_shared.keys import JWKSCache, KeyUnavailable, StaticKey
-from mib_shared.oss import OSSClient
+from mib_shared.oss import ObjectEntry, ObjectListing, OSSClient
 from mib_shared.readiness import (
     ReadinessCheck,
     ReadinessReport,
@@ -66,6 +66,8 @@ __all__ = [
     "ErrorEnvelope",
     "JWKSCache",
     "KeyUnavailable",
+    "ObjectEntry",
+    "ObjectListing",
     "OSSClient",
     "PermanentEmbeddingError",
     "Principal",

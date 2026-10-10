@@ -70,6 +70,7 @@ never a moved tag.
 | `0.8.0` | `mib_shared.oss.OSSClient`: signed reads from a private Alibaba OSS bucket (OSS's classic HMAC-SHA1 request signature). Artifact key naming and bucket/credential values stay in each consuming service — `mib-regulations#22` is the first consumer, `mib-ingestion` a planned second (write side) |
 | `0.9.0` | `OSSClient.put_object`: signed writes (Content-MD5 and Content-Type signed, retried as idempotent, fallback after the budget). The write side `mib-ingestion#3` needs for its content artifacts |
 | `0.10.0` | `OSSClient.put_object` also takes a file path: MD5 and upload read the file in 1 MiB pieces, with `Content-Length`, and a retry resends it whole. For `mib-ingestion#75`, whose largest source is 451 MB |
+| `0.11.0` | `OSSClient.delete_object`, and `list_objects` / `iter_objects` (ListObjects, paged by marker, parsed into `ObjectEntry` key / last-modified / size). For `mib-ingestion`'s sweep of superseded text objects in a size-limited bucket |
 
 ### Migrating to a published wheel later
 
