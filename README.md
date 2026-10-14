@@ -71,6 +71,7 @@ never a moved tag.
 | `0.9.0` | `OSSClient.put_object`: signed writes (Content-MD5 and Content-Type signed, retried as idempotent, fallback after the budget). The write side `mib-ingestion#3` needs for its content artifacts |
 | `0.10.0` | `OSSClient.put_object` also takes a file path: MD5 and upload read the file in 1 MiB pieces, with `Content-Length`, and a retry resends it whole. For `mib-ingestion#75`, whose largest source is 451 MB |
 | `0.11.0` | `OSSClient.delete_object`, and `list_objects` / `iter_objects` (ListObjects, paged by marker, parsed into `ObjectEntry` key / last-modified / size). For `mib-ingestion`'s sweep of superseded text objects in a size-limited bucket |
+| `0.12.0` | `visitor_ip(request)`: the visitor's address from `CF-Connecting-IP` behind Cloudflare, or `None`; never the peer address. For the download audit's `request_ip` and the anonymous per-IP backstop (`mib-infra#46`) |
 
 ### Migrating to a published wheel later
 
