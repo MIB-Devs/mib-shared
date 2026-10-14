@@ -6,7 +6,7 @@ probes, and the traced HTTP client. It must never carry domain logic or ORM
 models — a shared library that knows about regulations is a distributed
 monolith wearing four containers.
 """
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 from mib_shared.auth import (
     ALLOWED_ALGORITHMS,
@@ -56,6 +56,7 @@ from mib_shared.tracing import (
     trace_carrier,
     trace_context,
 )
+from mib_shared.visitor import VISITOR_IP_HEADER, visitor_ip
 
 __all__ = [
     "ALLOWED_ALGORITHMS",
@@ -77,6 +78,7 @@ __all__ = [
     "RetryPolicy",
     "ServiceCaller",
     "StaticKey",
+    "VISITOR_IP_HEADER",
     "TraceContext",
     "TracedAsyncClient",
     "TracedClient",
@@ -100,6 +102,7 @@ __all__ = [
     "service_call_headers",
     "trace_carrier",
     "trace_context",
+    "visitor_ip",
     "verify_access_token",
     "with_connect_timeout",
 ]
