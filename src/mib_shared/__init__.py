@@ -6,7 +6,7 @@ probes, and the traced HTTP client. It must never carry domain logic or ORM
 models — a shared library that knows about regulations is a distributed
 monolith wearing four containers.
 """
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 from mib_shared.auth import (
     ALLOWED_ALGORITHMS,
@@ -28,6 +28,15 @@ from mib_shared.embeddings import (
     TransientEmbeddingError,
 )
 from mib_shared.errors import ErrorEnvelope, install_error_handlers
+from mib_shared.guest import (
+    GUEST_COOKIE,
+    GUEST_TOKEN_HEADER,
+    Allowance,
+    AllowanceUnavailable,
+    guest_id,
+    mint_guest_token,
+    verify_guest_token,
+)
 from mib_shared.http_client import (
     DEFAULT_TIMEOUT,
     RetryBudgetExceeded,
@@ -61,8 +70,12 @@ from mib_shared.visitor import VISITOR_IP_HEADER, visitor_ip
 __all__ = [
     "ALLOWED_ALGORITHMS",
     "DEFAULT_TIMEOUT",
+    "GUEST_COOKIE",
+    "GUEST_TOKEN_HEADER",
     "MAX_EMBEDDING_BATCH",
     "VISITOR_IP_HEADER",
+    "Allowance",
+    "AllowanceUnavailable",
     "EmbeddingCaller",
     "EmbeddingError",
     "ErrorEnvelope",
@@ -91,8 +104,10 @@ __all__ = [
     "current_context",
     "evaluate_readiness",
     "get_logger",
+    "guest_id",
     "has_capability",
     "install_error_handlers",
+    "mint_guest_token",
     "new_trace_context",
     "optional_principal",
     "parse_traceparent",
@@ -103,6 +118,7 @@ __all__ = [
     "trace_carrier",
     "trace_context",
     "verify_access_token",
+    "verify_guest_token",
     "visitor_ip",
     "with_connect_timeout",
 ]
