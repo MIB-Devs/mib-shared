@@ -72,6 +72,7 @@ never a moved tag.
 | `0.10.0` | `OSSClient.put_object` also takes a file path: MD5 and upload read the file in 1 MiB pieces, with `Content-Length`, and a retry resends it whole. For `mib-ingestion#75`, whose largest source is 451 MB |
 | `0.11.0` | `OSSClient.delete_object`, and `list_objects` / `iter_objects` (ListObjects, paged by marker, parsed into `ObjectEntry` key / last-modified / size). For `mib-ingestion`'s sweep of superseded text objects in a size-limited bucket |
 | `0.12.0` | `visitor_ip(request)`: the visitor's address from `CF-Connecting-IP` behind Cloudflare, or `None`; never the peer address. For the download audit's `request_ip` and the anonymous per-IP backstop (`mib-infra#46`) |
+| `0.13.0` | `mib_shared.guest`: the anonymous visitor's token (`mint_guest_token`, `verify_guest_token`, `guest_id` over `X-Guest-Token`) and the daily allowance (`consume`, `release`, `status` over four Redis set commands, resetting at 00:00 WIB, failing closed with `AllowanceUnavailable`). For the guest chat allowance, the search teaser and the cookie (`mib-ai#2`, `mib-regulations#34`, `mib-web#17`) |
 
 ### Migrating to a published wheel later
 
