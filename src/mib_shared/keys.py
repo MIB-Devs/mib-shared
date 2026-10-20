@@ -56,6 +56,9 @@ class JWKSCache:
     ``jwks_url`` is the published key endpoint. Nothing here knows what a user or
     a capability is — it holds keys, which is why it belongs in a mechanics-only
     library (§8.3).
+
+    The fetch always goes to ``jwks_url`` (a trailing slash on it is dropped), not
+    to an injected ``client``'s own ``base_url``.
     """
 
     jwks_url: str
@@ -69,6 +72,8 @@ class JWKSCache:
     _lock: anyio.Lock = field(default_factory=anyio.Lock, init=False)
 
     def __post_init__(self) -> None:
+        # FastAPI 307s `…/jwks/` away from `…/jwks`, and the fetch does not follow.
+        self.jwks_url = self.jwks_url.rstrip("/")
         # The client carries a timeout, a bounded retry and traceparent
         # propagation, because this is an outbound call like any other
         # (FR-BE-21, FR-BE-25).
@@ -153,8 +158,12 @@ class JWKSCache:
             self._last_attempt = time.monotonic()
 
             assert self._client is not None
+            # Absolute URL on purpose. `TracedAsyncClient(jwks_url)` + `GET ""`
+            # makes httpx request `…/jwks/` (trailing slash); FastAPI then 307s
+            # to `…/jwks`, the client does not follow, and the cache stays empty
+            # (#36). An absolute path keeps the published endpoint exact.
             response = await self._client.get(
-                "",
+                self.jwks_url,
                 fallback=lambda cause: cause,
             )
             if not hasattr(response, "status_code") or response.status_code != 200:
@@ -169,6 +178,8 @@ class JWKSCache:
                     reason=type(response).__name__
                     if not hasattr(response, "status_code")
                     else response.status_code,
+                    # A redirect is not followed; say where it pointed.
+                    location=getattr(response, "headers", {}).get("location"),
                 )
                 return
 

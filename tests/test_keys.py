@@ -20,6 +20,7 @@ class FakeIdentity:
     def __init__(self, *kids: str):
         self.keys = {kid: _jwk(kid) for kid in kids}
         self.calls = 0
+        self.requested: list[str] = []
         self.status = 200
         self.body: dict | None = None
 
@@ -30,6 +31,12 @@ class FakeIdentity:
     def transport(self) -> httpx.MockTransport:
         def handler(request: httpx.Request) -> httpx.Response:
             self.calls += 1
+            path = request.url.path
+            self.requested.append(path)
+            if path.endswith("/") and path != "/":
+                # What FastAPI does to a trailing slash (#36); the client does not follow.
+                target = str(request.url.copy_with(path=path.rstrip("/")))
+                return httpx.Response(307, headers={"location": target})
             if self.status != 200:
                 return httpx.Response(self.status)
             return httpx.Response(200, json=self.body or {"keys": list(self.keys.values())})
@@ -50,6 +57,26 @@ async def test_the_key_is_fetched_once_and_then_cached():
     for _ in range(5):
         assert await cache.get("key-1") is not None
     assert identity.calls == 1
+
+
+@pytest.mark.anyio
+async def test_refresh_requests_the_exact_url_without_a_trailing_slash():
+    """httpx turns `base_url` + `GET ""` into `…/jwks/`; FastAPI 307s that away (#36)."""
+    identity = FakeIdentity("key-1")
+    cache = identity.cache(ttl_seconds=300)
+
+    assert await cache.get("key-1") is not None
+    assert identity.requested == ["/jwks"]
+
+
+@pytest.mark.anyio
+async def test_a_trailing_slash_on_the_configured_url_is_dropped():
+    identity = FakeIdentity("key-1")
+    client = TracedAsyncClient("http://identity.test/jwks/", transport=identity.transport())
+    cache = JWKSCache(jwks_url="http://identity.test/jwks/", client=client)
+
+    assert await cache.get("key-1") is not None
+    assert identity.requested == ["/jwks"]
 
 
 @pytest.mark.anyio
