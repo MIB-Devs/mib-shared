@@ -92,10 +92,11 @@ def new_trace_context(parent: str | None = None, *, request_id: str | None = Non
 
     Traefik initiates the trace at the edge (FR-BE-08), so in production ``parent``
     is normally present; a service called directly still gets a trace of its own.
+
+    An inbound trace keeps its trace id and gets a new span for this hop.
     """
     inbound = parse_traceparent(parent)
     if inbound is not None:
-        # Same trace, new span for this hop.
         return TraceContext(
             trace_id=inbound.trace_id,
             span_id=_new_span_id(),
@@ -199,6 +200,10 @@ class TracingMiddleware:
         ServerErrorMiddleware builds that response outside this one, so the status never
         passes through ``send``. ``/health``, ``/ready`` and ``/metrics`` are not logged:
         probes hit them every few seconds and would bury the real requests.
+
+        The context is also stashed on the scope: ServerErrorMiddleware sits outside this one and
+        builds the 500 after the contextvar is reset, so that response would otherwise lack a trace
+        reference.
         """
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -207,23 +212,18 @@ class TracingMiddleware:
         headers = Headers(scope=scope)
         request_id = headers.get(REQUEST_ID_HEADER) or os.urandom(8).hex()
         ctx = new_trace_context(headers.get(TRACEPARENT_HEADER), request_id=request_id)
-        # Also stashed on the scope, because Starlette's ServerErrorMiddleware sits
-        # OUTSIDE this one: an unhandled exception is turned into a response after
-        # this context manager has exited, when the contextvar is already reset.
-        # Without this, the 500 that most needs a trace reference would be the one
-        # response without one.
         scope[SCOPE_KEY] = ctx
 
         started = time.perf_counter()
         status: int | None = None
 
         async def send_with_trace(message: Message) -> None:
+            """Echo the trace ids on every response, success included: the reference a user quotes
+            to support must exist before anything goes wrong (FR-BE-12).
+            """
             nonlocal status
             if message["type"] == "http.response.start":
                 status = message["status"]
-                # Echoed on every response, success included: the reference a user
-                # quotes to support has to exist before anything goes wrong
-                # (FR-BE-12).
                 out = MutableHeaders(scope=message)
                 out[TRACE_ID_HEADER] = ctx.trace_id
                 out[REQUEST_ID_HEADER] = request_id
