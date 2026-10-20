@@ -129,6 +129,102 @@ async def test_context_does_not_leak_between_requests():
     assert current_context() is None
 
 
+# --- request_completed ------------------------------------------------------
+
+def _json_logs() -> None:
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.JSONRenderer(),
+        ],
+        logger_factory=structlog.PrintLoggerFactory(),
+        cache_logger_on_first_use=False,
+    )
+
+
+def _completed(capsys) -> list[dict]:
+    out = capsys.readouterr().out.strip().splitlines()
+    lines = [json.loads(x) for x in out if x.startswith("{")]
+    return [x for x in lines if x.get("event") == "request_completed"]
+
+
+def _app_with_failures() -> FastAPI:
+    from fastapi import HTTPException
+
+    app = _app()
+
+    @app.get("/unavailable")
+    async def unavailable() -> None:
+        raise HTTPException(status_code=503, detail="storage down")
+
+    @app.get("/missing")
+    async def missing() -> None:
+        raise HTTPException(status_code=404, detail="no such thing")
+
+    @app.get("/boom")
+    async def boom() -> None:
+        raise RuntimeError("boom")
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
+
+    return app
+
+
+@pytest.mark.anyio
+async def test_a_handled_503_is_logged_under_the_requests_trace(capsys):
+    _json_logs()
+    resp = await _get(_app_with_failures(), "/unavailable", {"traceparent": INBOUND})
+    assert resp.status_code == 503
+    (line,) = _completed(capsys)
+
+    assert line["trace_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+    assert line["request_id"] == resp.headers["x-request-id"]
+    assert (line["method"], line["path"], line["status"]) == ("GET", "/unavailable", 503)
+    assert line["duration_ms"] >= 0
+    assert line["level"] == "error"
+
+
+@pytest.mark.anyio
+async def test_level_follows_the_status(capsys):
+    _json_logs()
+    app = _app_with_failures()
+    await _get(app, "/echo")
+    await _get(app, "/missing")
+    levels = [(x["status"], x["level"]) for x in _completed(capsys)]
+    assert levels == [(200, "info"), (404, "warning")]
+
+
+@pytest.mark.anyio
+async def test_the_query_string_is_not_logged(capsys):
+    _json_logs()
+    await _get(_app_with_failures(), "/echo?token=secret&q=rahasia")
+    (line,) = _completed(capsys)
+    assert line["path"] == "/echo"
+    assert "secret" not in json.dumps(line)
+
+
+@pytest.mark.anyio
+async def test_probe_paths_are_not_logged(capsys):
+    _json_logs()
+    resp = await _get(_app_with_failures(), "/health")
+    assert resp.status_code == 200
+    assert _completed(capsys) == []
+
+
+@pytest.mark.anyio
+async def test_an_unhandled_exception_is_logged_as_a_500(capsys):
+    _json_logs()
+    transport = httpx.ASGITransport(app=_app_with_failures(), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.get("/boom", headers={"traceparent": INBOUND})
+    (line,) = _completed(capsys)
+    assert line["status"] == 500
+    assert line["trace_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+
+
 # --- log correlation (NFR-16) ----------------------------------------------
 
 def test_bound_context_lands_on_every_log_line(capsys):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -22,6 +23,11 @@ _VERSION = "00"
 _TRACEPARENT_RE = re.compile(r"^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$")
 _ALL_ZERO_TRACE = "0" * 32
 _ALL_ZERO_SPAN = "0" * 16
+
+# Probes hit these every few seconds; one line each would bury the real requests.
+_UNLOGGED_PATHS = frozenset({"/health", "/ready", "/metrics"})
+
+logger = structlog.get_logger(__name__)
 
 _current: ContextVar[TraceContext | None] = ContextVar("mib_trace_context", default=None)
 
@@ -201,8 +207,13 @@ class TracingMiddleware:
         # response without one.
         scope[SCOPE_KEY] = ctx
 
+        started = time.perf_counter()
+        status: int | None = None
+
         async def send_with_trace(message: Message) -> None:
+            nonlocal status
             if message["type"] == "http.response.start":
+                status = message["status"]
                 # Echoed on every response, success included: the reference a user
                 # quotes to support has to exist before anything goes wrong
                 # (FR-BE-12).
@@ -213,4 +224,34 @@ class TracingMiddleware:
             await send(message)
 
         with trace_context(ctx):
-            await self.app(scope, receive, send_with_trace)
+            try:
+                await self.app(scope, receive, send_with_trace)
+            except Exception:
+                # ServerErrorMiddleware turns this into a 500 outside this one, so the
+                # status never passes through ``send`` here.
+                if status is None:
+                    status = 500
+                raise
+            finally:
+                # Inside the ``with`` so the line carries trace_id, span_id and request_id.
+                if status is not None and scope["path"] not in _UNLOGGED_PATHS:
+                    _log_completed(scope, status, started)
+
+
+def _log_completed(scope: Scope, status: int, started: float) -> None:
+    """One line per request, so a trace quoted by a user ends in how its request ended.
+
+    Handlers raise ``HTTPException`` for a 401, 403, 429 or 503 and nothing logs it;
+    uvicorn's own access line has no trace_id. Without this a handled failure leaves
+    no record under the reference the user was given (FR-BE-12, NFR-16). The path is
+    ``scope["path"]``, which has no query string, so a token or a search term in the
+    URL never reaches the log.
+    """
+    level = "error" if status >= 500 else "warning" if status >= 400 else "info"
+    getattr(logger, level)(
+        "request_completed",
+        method=scope["method"],
+        path=scope["path"],
+        status=status,
+        duration_ms=round((time.perf_counter() - started) * 1000, 1),
+    )
