@@ -53,6 +53,30 @@ async def test_the_key_is_fetched_once_and_then_cached():
 
 
 @pytest.mark.anyio
+async def test_refresh_does_not_append_a_trailing_slash():
+    """httpx turns `base_url` + `GET ""` into `…/jwks/`; FastAPI 307s that away (#36)."""
+    identity = FakeIdentity("key-1")
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        identity.calls += 1
+        path = request.url.path
+        requested.append(path)
+        if path.endswith("/") and path != "/":
+            target = str(request.url.copy_with(path=path.rstrip("/")))
+            return httpx.Response(307, headers={"location": target})
+        return httpx.Response(200, json={"keys": list(identity.keys.values())})
+
+    url = "http://identity.test/api/v1/auth/jwks"
+    client = TracedAsyncClient(url, transport=httpx.MockTransport(handler))
+    cache = JWKSCache(jwks_url=url, client=client, ttl_seconds=300)
+
+    assert await cache.get("key-1") is not None
+    assert identity.calls == 1
+    assert requested == ["/api/v1/auth/jwks"]
+
+
+@pytest.mark.anyio
 async def test_an_unknown_kid_triggers_a_refresh_so_rotation_works():
     """Trap 1: a timer-only cache rejects every token for its TTL after rotation."""
     identity = FakeIdentity("old-key")

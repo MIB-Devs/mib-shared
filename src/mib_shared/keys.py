@@ -153,8 +153,12 @@ class JWKSCache:
             self._last_attempt = time.monotonic()
 
             assert self._client is not None
+            # Absolute URL on purpose. `TracedAsyncClient(jwks_url)` + `GET ""`
+            # makes httpx request `…/jwks/` (trailing slash); FastAPI then 307s
+            # to `…/jwks`, the client does not follow, and the cache stays empty
+            # (#36). An absolute path keeps the published endpoint exact.
             response = await self._client.get(
-                "",
+                self.jwks_url,
                 fallback=lambda cause: cause,
             )
             if not hasattr(response, "status_code") or response.status_code != 200:
