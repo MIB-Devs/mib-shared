@@ -116,8 +116,8 @@ def test_guest_id_reads_the_forwarded_header():
 
 
 def test_the_day_resets_at_midnight_wib():
+    """16:59 UTC is 23:59 WIB, a minute left; 17:00 UTC is already the next day."""
     assert next_reset(NOON) == datetime(2026, 10, 17, 17, 0, tzinfo=UTC)
-    # 16:59 UTC is 23:59 WIB: a minute left. 17:00 UTC is already the next day.
     at = lambda day, hour, minute: datetime(2026, 10, day, hour, minute, tzinfo=UTC)  # noqa: E731
     assert next_reset(at(17, 16, 59)) == at(17, 17, 0)
     assert next_reset(at(17, 17, 0)) == at(18, 17, 0)
@@ -158,11 +158,11 @@ async def test_the_same_use_twice_costs_once():
 
 @pytest.mark.anyio
 async def test_a_counted_use_is_still_free_after_the_limit_is_reached():
+    """Paging query "b" again is not a new search."""
     store = FakeStore()
     await take(store, "a")
     await take(store, "b")
     assert not (await take(store, "c")).allowed
-    # Paging query "b" again is not a new search.
     assert (await take(store, "b")).allowed
 
 
@@ -176,10 +176,10 @@ async def test_a_released_use_is_given_back():
 
 @pytest.mark.anyio
 async def test_subjects_and_days_are_counted_apart():
+    """00:00 WIB the next day is 17:00 UTC."""
     store = FakeStore()
     await take(store, "a", limit=1)
     assert (await take(store, "a", subject="g2", limit=1)).allowed
-    # 00:00 WIB the next day is 17:00 UTC.
     tomorrow = datetime(2026, 10, 17, 17, 0, tzinfo=UTC)
     assert (await take(store, "b", limit=1, now=tomorrow)).allowed
 
@@ -196,7 +196,7 @@ async def test_the_key_expires_after_the_day_and_an_hour():
     store = FakeStore()
     await take(store, "a")
     (ttl,) = store.ttls.values()
-    assert ttl == 5 * 3600 + 3600  # 12:00 UTC to 17:00 UTC, plus the hour
+    assert ttl == 5 * 3600 + 3600
 
 
 @pytest.mark.anyio

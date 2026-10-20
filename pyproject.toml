@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mib-shared"
-version = "0.13.1"
+version = "0.14.0"
 description = "MIB cross-cutting mechanics: auth, error envelope, telemetry and tracing, readiness probes, traced HTTP client. No domain logic."
 requires-python = ">=3.12"
 dependencies = [
@@ -28,6 +28,8 @@ dev = ["pytest>=8.0", "ruff>=0.5", "sqlalchemy>=2.0", "alembic>=1.13"]
 # Every service's CI runs this over its own source: an outbound call without a
 # timeout fails the build rather than being caught in review (FR-BE-21).
 mib-check-timeouts = "mib_shared.lint:main"
+# A comment inside a function body fails the build too; the docstring carries it.
+mib-check-function-comments = "mib_shared.comments:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

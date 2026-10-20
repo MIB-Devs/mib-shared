@@ -44,7 +44,7 @@ async def test_ready_ok_when_probe_passes():
 
 @pytest.mark.anyio
 async def test_absent_dependency_is_not_a_failure():
-    # A probe returning None means "this service has no such dependency".
+    """A probe returning None means this service has no such dependency."""
     resp = await _get(_app(ReadinessCheck("redis", lambda: None)), "/ready")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ready", "checks": {}}
@@ -101,6 +101,7 @@ async def test_unreachable_dependency_fails_fast_under_five_seconds(wedged_probe
 
 @pytest.mark.anyio
 async def test_health_keeps_answering_while_ready_is_blocked(wedged_probe):
+    """The blocking probe runs on a worker thread, so liveness is not stalled by it."""
     app = _app(ReadinessCheck("database", wedged_probe, timeout=2.0), overall_timeout=3.0)
     health: dict = {}
 
@@ -109,13 +110,12 @@ async def test_health_keeps_answering_while_ready_is_blocked(wedged_probe):
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(_hit_ready)
-        await anyio.sleep(0.2)  # let /ready get as far as the blocking probe
+        await anyio.sleep(0.2)
         started = time.monotonic()
         resp = await _get(app, "/health")
         health["elapsed"] = time.monotonic() - started
         health["status"] = resp.status_code
 
-    # The blocking probe is on a worker thread, so liveness is not stalled by it.
     assert health["status"] == 200
     assert health["elapsed"] < 1.0
 
@@ -132,7 +132,7 @@ async def test_probes_run_concurrently_not_in_sequence():
     elapsed = time.monotonic() - started
 
     assert report.ready
-    assert elapsed < 1.2  # sequential would be ~1.6s
+    assert elapsed < 1.2
 
 
 @pytest.mark.anyio
@@ -146,8 +146,8 @@ async def test_async_probe_is_supported():
 
 
 def test_connect_timeout_is_added_once():
+    """An explicit setting already in the URL is never overridden."""
     url = "postgresql+psycopg://svc:pw@db:5432/mib"
     stamped = with_connect_timeout(url, 2)
     assert "connect_timeout=2" in stamped
-    # Never overrides an explicit setting already in the URL.
     assert with_connect_timeout(stamped, 9) == stamped

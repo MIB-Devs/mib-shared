@@ -27,13 +27,14 @@ def test_timed_client_construction_is_accepted():
 
 
 def test_requests_is_covered_too():
-    # requests has no default timeout at all, which is worse than a long one.
+    """requests has no default timeout at all, which is worse than a long one."""
     assert len(check_source("import requests\nrequests.post('http://x')\n", HERE)) == 1
 
 
 def test_kwargs_forwarding_is_not_flagged():
-    # A wrapper passing the caller's timeout through would otherwise train
-    # people to suppress the check.
+    """A wrapper passing the caller's timeout through would otherwise train people to suppress the
+    check.
+    """
     src = "import httpx\ndef f(**kw):\n    return httpx.get('http://x', **kw)\n"
     assert check_source(src, HERE) == []
 
@@ -55,7 +56,7 @@ def test_a_syntax_error_is_reported_not_swallowed():
 
 
 def test_the_library_itself_passes_its_own_check():
-    # mib_shared.http_client always sets a timeout; if that regresses, this fails.
+    """mib_shared.http_client always sets a timeout; if that regresses, this fails."""
     assert check_paths(["src"]) == []
 
 

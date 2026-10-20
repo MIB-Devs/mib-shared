@@ -10,8 +10,9 @@ def _last_line(capsys) -> dict:
 
 
 def _fresh_logger(name: str):
-    # configure_logging caches bound loggers, so a test that reconfigures has to
-    # ask for a logger afterwards rather than reusing one from another test.
+    """configure_logging caches bound loggers, so a test that reconfigures must ask for a logger
+    afterwards.
+    """
     structlog.reset_defaults()
     configure_logging("INFO")
     return get_logger(name)
@@ -45,9 +46,7 @@ def test_exception_logging_keeps_the_traceback(capsys):
     assert line["exception"].startswith("Traceback (most recent call last)")
     assert "RuntimeError: the database ate it" in line["exception"]
     assert "test_exception_logging_keeps_the_traceback" in line["exception"]
-    # The raw flag must not survive into the rendered line.
     assert "exc_info" not in line
-    # Structured fields still travel alongside the traceback.
     assert line["path"] == "/api/v1/auth"
 
 

@@ -86,7 +86,7 @@ def make_token(
 
 @pytest.mark.anyio
 async def test_a_valid_token_authenticates_with_no_call_to_identity(keypair, keys):
-    # StaticKey makes the point structurally: there is no client here to call.
+    """StaticKey makes the point structurally: there is no client to call."""
     principal = await verify_access_token(
         make_token(keypair[0]), keys=keys, audience=AUDIENCE, issuer=ISSUER
     )
@@ -105,12 +105,14 @@ async def test_an_expired_token_is_refused(keypair, keys):
 
 @pytest.mark.anyio
 async def test_a_token_for_another_audience_is_refused(keypair, keys):
-    """FR-SSO-11: an administrator token must not work on a public endpoint."""
+    """FR-SSO-11: an administrator token must not work on a public endpoint.
+
+    The message must not disclose which audience was wanted.
+    """
     token = make_token(keypair[0], aud=ADMIN_AUDIENCE)
     with pytest.raises(Exception) as excinfo:
         await verify_access_token(token, keys=keys, audience=AUDIENCE, issuer=ISSUER)
     assert excinfo.value.status_code == 401
-    # And the message must not disclose which audience this service wanted.
     assert ADMIN_AUDIENCE not in str(excinfo.value.detail)
     assert AUDIENCE not in str(excinfo.value.detail)
 
@@ -204,7 +206,7 @@ async def test_garbage_is_refused_without_raising_something_unhelpful(keys):
 
 @pytest.mark.anyio
 async def test_small_clock_skew_is_tolerated(keypair, keys):
-    # Issued 10s in the "future" by a host whose clock runs fast.
+    """A token issued 10s in the future by a host whose clock runs fast."""
     token = make_token(keypair[0], iat_delta=10)
     principal = await verify_access_token(
         token, keys=keys, audience=AUDIENCE, issuer=ISSUER, leeway_seconds=30
@@ -269,8 +271,9 @@ async def test_a_capability_the_token_carries_is_allowed(keypair, keys):
 
 @pytest.mark.anyio
 async def test_a_capability_the_token_lacks_is_403_not_401(keypair, keys):
-    # Authenticated but not entitled. 401 would tell the client to log in again,
-    # which sends them round a loop that cannot succeed.
+    """Authenticated but not entitled: 401 would send the client round a login loop that cannot
+    succeed.
+    """
     token = make_token(keypair[0], capabilities=("regulations.search",))
     resp = await _get(_app(keys), "/summary", {"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403

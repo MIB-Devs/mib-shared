@@ -74,6 +74,7 @@ never a moved tag.
 | `0.12.0` | `visitor_ip(request)`: the visitor's address from `CF-Connecting-IP` behind Cloudflare, or `None`; never the peer address. For the download audit's `request_ip` and the anonymous per-IP backstop (`mib-infra#46`) |
 | `0.13.0` | `mib_shared.guest`: the anonymous visitor's token (`mint_guest_token`, `verify_guest_token`, `guest_id` over `X-Guest-Token`) and the daily allowance (`consume`, `release`, `status` over four Redis set commands, resetting at 00:00 WIB, failing closed with `AllowanceUnavailable`). For the guest chat allowance, the search teaser and the cookie (`mib-ai#2`, `mib-regulations#34`, `mib-web#17`) |
 | `0.13.1` | `JWKSCache` requests the absolute `jwks_url` so httpx does not append a trailing slash that FastAPI 307s away from the published endpoint (#36) |
+| `0.14.0` | `TracingMiddleware` logs one `request_completed` line per request (method, path, status, `duration_ms`, with the bound `trace_id`), so a handled 401, 403, 429 or 503 is found under the reference a user quotes. `/health`, `/ready` and `/metrics` are skipped (#38). Also `mib-check-function-comments`: fails the build on a `#` comment inside a function body, so the docstring carries it; tool directives are exempt |
 
 ### Migrating to a published wheel later
 
@@ -301,6 +302,20 @@ It fails the build on any `httpx`/`requests` call or client built without a
 timeout. Ruff cannot express this, and review misses it exactly once — which is
 all it takes. A deliberate exception is marked in the source with
 `# mib: timeout-ok`.
+
+### No comment inside a function
+
+A second check keeps function bodies free of `#` comments:
+
+```bash
+mib-check-function-comments app tests
+```
+
+What the code needs said goes in the function's docstring, kept compact; a comment
+in the middle of a body drifts from the code it describes. Tool directives
+(`# noqa`, `# type:`, `# pragma:`, `# fmt:`, `# ruff:`, `# pyright:`, `# mypy:`,
+`# pylint:`, `# nosec`, `# mib: timeout-ok`) stay. Module- and class-level comments
+are not checked, and Alembic `migrations/` stay out of the targets.
 
 ## Ops endpoints
 

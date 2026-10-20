@@ -58,6 +58,7 @@ def test_a_retry_policy_must_allow_at_least_one_attempt():
 
 @pytest.mark.anyio
 async def test_traceparent_is_propagated_as_a_child_span():
+    """Same trace, different span: the next hop is a child, not a repeat."""
     transport, seen = _recording_transport(200)
     ctx = new_trace_context(INBOUND)
     async with TracedAsyncClient("http://svc", transport=transport) as client:
@@ -66,7 +67,6 @@ async def test_traceparent_is_propagated_as_a_child_span():
 
     sent = seen[0].headers["traceparent"]
     assert sent.startswith("00-4bf92f3577b34da6a3ce929d0e0e4736-")
-    # Same trace, different span — the next hop is a child, not a repeat.
     assert ctx.span_id not in sent
 
 
@@ -91,11 +91,12 @@ async def test_a_call_outside_a_trace_starts_its_own_instead_of_sending_none():
 
 @pytest.mark.anyio
 async def test_the_started_trace_is_not_bound_onto_the_caller():
+    """Sending a header is not adopting it: a worker that wants its logs on the trace must bind the
+    context itself.
+    """
     transport, seen = _recording_transport(200)
     async with TracedAsyncClient("http://svc", transport=transport) as client:
         await client.get("/thing")
-    # Sending a header is not the same as adopting it — a worker that wants its
-    # own logs on the trace has to bind_context() itself.
     assert current_context() is None
 
 
@@ -125,12 +126,13 @@ async def test_a_transport_error_is_retried_up_to_the_budget():
 
 @pytest.mark.anyio
 async def test_a_retryable_status_is_retried_then_returned():
+    """With no fallback the last response is handed back rather than raised.
+
+    Existing call sites do not break; the caller decides whether a sibling's 503 is fatal.
+    """
     transport, seen = _recording_transport(503, 503, 503)
     async with TracedAsyncClient("http://svc", transport=transport, retry=NO_BACKOFF) as client:
         resp = await client.get("/thing")
-    # No fallback was supplied, so this is not a breaking change for existing
-    # call sites: the last response is handed back rather than raised, and the
-    # caller decides whether a 503 from a sibling is fatal to their own request.
     assert len(seen) == 3
     assert resp.status_code == 503
 
@@ -155,7 +157,7 @@ async def test_a_client_error_is_not_retried():
 
 @pytest.mark.anyio
 async def test_post_is_not_retried_by_default():
-    # Repeating a POST that already created a subscription is worse than failing.
+    """Repeating a POST that already created a subscription is worse than failing."""
     transport, seen = _failing_transport(httpx.ConnectError("refused"))
     async with TracedAsyncClient("http://svc", transport=transport, retry=NO_BACKOFF) as client:
         with pytest.raises(RetryBudgetExceeded):
@@ -173,8 +175,8 @@ async def test_post_is_retried_when_declared_idempotent():
 
 
 def test_backoff_grows_and_is_capped():
+    """The delay is jittered, so the band is asserted rather than a value."""
     policy = RetryPolicy(attempts=5, backoff_seconds=1.0, max_backoff_seconds=4.0)
-    # Jittered, so assert the band rather than an exact value.
     assert 0.5 <= policy.delay_for(1) <= 1.0
     assert 1.0 <= policy.delay_for(2) <= 2.0
     assert 2.0 <= policy.delay_for(10) <= 4.0
@@ -184,9 +186,9 @@ def test_backoff_grows_and_is_capped():
 
 @pytest.mark.anyio
 async def test_the_fallback_replaces_the_failure():
+    """The fallback stands in for degrading to lexical search when retrieval is down."""
     transport, _ = _failing_transport(httpx.ConnectError("refused"))
     async with TracedAsyncClient("http://svc", transport=transport, retry=NO_BACKOFF) as client:
-        # Stands in for degrading to lexical search when retrieval is down.
         result = await client.get("/embed", fallback=lambda _cause: "lexical")
     assert result == "lexical"
 
@@ -221,8 +223,10 @@ async def test_the_fallback_for_a_final_status_is_told_the_response():
 
 @pytest.mark.anyio
 async def test_a_client_error_does_not_reach_the_fallback():
-    # A 404 is an answer, not a failure — routing it to a fallback would hide
-    # a real bug (e.g. a missing credential) as a degraded dependency.
+    """A 404 is an answer, not a failure.
+
+    Routing it to a fallback would hide a real bug as a degraded dependency.
+    """
     transport, seen = _recording_transport(404)
     async with TracedAsyncClient("http://svc", transport=transport, retry=NO_BACKOFF) as client:
         resp = await client.get("/thing", fallback=lambda _cause: "lexical")

@@ -72,12 +72,12 @@ def identity() -> Identity:
 
 @pytest.fixture
 def app(identity: Identity) -> FastAPI:
+    """A tiered-preview endpoint: ``preview`` without a principal, ``full`` with one."""
     caller = optional_principal(keys=identity.cache(), audience=AUDIENCE, issuer=ISSUER)
     application = FastAPI()
 
     @application.get("/regulation")
     async def regulation(who: Annotated[Principal | None, Depends(caller)]) -> dict:
-        # The shape a tiered-preview endpoint actually uses.
         if who is None:
             return {"view": "preview", "user": None}
         return {"view": "full", "user": who.user_id}

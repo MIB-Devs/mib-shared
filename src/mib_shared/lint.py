@@ -52,10 +52,9 @@ def _qualname(node: ast.AST) -> str | None:
 
 
 def _has_timeout(call: ast.Call) -> bool:
+    """True if the call sets ``timeout`` or forwards ``**kwargs``, which may carry one."""
     if any(kw.arg == "timeout" for kw in call.keywords):
         return True
-    # **kwargs forwarding — the caller may be passing a timeout through, and
-    # flagging every wrapper would train people to suppress the check.
     return any(kw.arg is None for kw in call.keywords)
 
 

@@ -23,5 +23,10 @@ jobs:
         # The library ships this check for every service to run; it has to hold
         # for the library itself first.
         run: mib-check-timeouts src tests
+
+      - name: No comment inside a function
+        # Shipped by mib-shared; the docstring carries what the code needs said.
+        run: mib-check-function-comments src tests
+
       - name: Test
         run: pytest -q

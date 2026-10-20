@@ -70,7 +70,13 @@ def _response(status_code: int, env: ErrorEnvelope) -> JSONResponse:
 
 
 def install_error_handlers(app: FastAPI) -> None:
-    """Give a service the one error shape every client can rely on."""
+    """Give a service the one error shape every client can rely on.
+
+    Validation errors return field-level detail but never the input values. The unhandled-exception
+    handler passes ``trace_id`` and ``request_id`` explicitly: ServerErrorMiddleware sits outside
+    TracingMiddleware, so the contextvars are already unbound and the 500 log line would otherwise
+    lack the reference the user quotes (FR-BE-12).
+    """
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
@@ -80,8 +86,6 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
-        # Field-level detail is safe to return and saves a support round trip;
-        # the input values themselves are not echoed back.
         details = [
             {"field": ".".join(str(p) for p in err.get("loc", ())), "reason": err.get("msg", "")}
             for err in exc.errors()
@@ -94,13 +98,6 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
         env = _envelope(request, "internal_error", "An unexpected error occurred.")
-        # trace_id and request_id are passed EXPLICITLY rather than relied on from
-        # the logging context. Starlette's ServerErrorMiddleware sits outside
-        # TracingMiddleware, so by the time this handler runs the contextvars have
-        # been unbound and merge_contextvars contributes nothing. The envelope
-        # still has them (it reads the ASGI scope), so without this the 500 that
-        # hands a user a reference is the one log line that never mentions it —
-        # exactly the line support needs when they quote it back (FR-BE-12).
         logger.exception(
             "unhandled_exception",
             trace_id=env.trace_id,

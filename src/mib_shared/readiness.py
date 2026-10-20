@@ -70,14 +70,15 @@ def with_connect_timeout(url: str, seconds: int = DEFAULT_CONNECT_TIMEOUT) -> st
 
 
 async def _run_probe(check: ReadinessCheck) -> str:
+    """The verdict as a status string. A probe that raises is a dependency that is not answering:
+    reported as unavailable, not as a 500 from the ops endpoint.
+    """
     try:
         with anyio.fail_after(check.timeout):
             verdict = await check.probe()  # type: ignore[misc]
     except TimeoutError:
         return TIMEOUT
     except Exception:
-        # A probe that raises is a dependency that is not answering. Readiness
-        # reports that as unavailable rather than as a 500 from the ops endpoint.
         return UNAVAILABLE
     if verdict is None:
         return SKIPPED
@@ -85,12 +86,13 @@ async def _run_probe(check: ReadinessCheck) -> str:
 
 
 async def _run_check(check: ReadinessCheck) -> tuple[str, str]:
+    """Run a probe, off the event loop if it is sync. On timeout the thread is abandoned rather than
+    waited out, which is the point of the bound.
+    """
     if inspect.iscoroutinefunction(check.probe):
         return check.name, await _run_probe(check)
 
     async def _threaded() -> bool | None:
-        # abandon_on_cancel: on timeout we stop waiting for the thread rather
-        # than waiting out the driver, which is the whole point of the bound.
         return await to_thread.run_sync(check.probe, abandon_on_cancel=True)
 
     threaded = ReadinessCheck(name=check.name, probe=_threaded, timeout=check.timeout)

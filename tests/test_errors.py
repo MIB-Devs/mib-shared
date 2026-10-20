@@ -48,13 +48,13 @@ async def _request(method: str, path: str, **kwargs) -> httpx.Response:
 
 @pytest.mark.anyio
 async def test_unhandled_error_returns_the_envelope_with_a_resolvable_trace_id():
+    """The trace id is also in the headers, for clients that never read an error body."""
     resp = await _request("GET", "/boom", headers={"traceparent": INBOUND})
     assert resp.status_code == 500
     body = resp.json()
     assert body["error_code"] == "internal_error"
     assert body["trace_id"] == TRACE_ID
     assert body["request_id"]
-    # Also in the headers, for clients that never read an error body.
     assert resp.headers["x-trace-id"] == TRACE_ID
 
 
@@ -105,6 +105,9 @@ async def test_the_unhandled_error_log_line_carries_the_trace_id(capsys):
     survives; the log line did not. A user quoting a reference from the error page
     would find no line matching it — with the traceback in the one line that was
     missing it.
+
+    The log line carries the id the client was handed, so one grep finds both, and the stack is
+    there to be read once found.
     """
     structlog.reset_defaults()
     configure_logging("INFO")
@@ -115,8 +118,6 @@ async def test_the_unhandled_error_log_line_carries_the_trace_id(capsys):
 
     line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert line["event"] == "unhandled_exception"
-    # The same id the client was handed, so one grep finds both.
     assert line["trace_id"] == TRACE_ID
     assert line["request_id"] == resp.json()["request_id"]
-    # And the stack is actually there to be read once found.
     assert "RuntimeError: the database ate it" in line["exception"]
