@@ -24,7 +24,6 @@ _TRACEPARENT_RE = re.compile(r"^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-
 _ALL_ZERO_TRACE = "0" * 32
 _ALL_ZERO_SPAN = "0" * 16
 
-# Probes hit these every few seconds; one line each would bury the real requests.
 _UNLOGGED_PATHS = frozenset({"/health", "/ready", "/metrics"})
 
 logger = structlog.get_logger(__name__)
@@ -193,6 +192,14 @@ class TracingMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Trace one HTTP request and log how it ended.
+
+        The completion line is written inside the ``with`` so it carries trace_id,
+        span_id and request_id. An unhandled exception is logged as a 500 here because
+        ServerErrorMiddleware builds that response outside this one, so the status never
+        passes through ``send``. ``/health``, ``/ready`` and ``/metrics`` are not logged:
+        probes hit them every few seconds and would bury the real requests.
+        """
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -227,13 +234,10 @@ class TracingMiddleware:
             try:
                 await self.app(scope, receive, send_with_trace)
             except Exception:
-                # ServerErrorMiddleware turns this into a 500 outside this one, so the
-                # status never passes through ``send`` here.
                 if status is None:
                     status = 500
                 raise
             finally:
-                # Inside the ``with`` so the line carries trace_id, span_id and request_id.
                 if status is not None and scope["path"] not in _UNLOGGED_PATHS:
                     _log_completed(scope, status, started)
 
