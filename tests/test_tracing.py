@@ -218,7 +218,9 @@ async def test_probe_paths_are_not_logged(capsys):
 async def test_an_unhandled_exception_is_logged_as_a_500(capsys):
     _json_logs()
     transport = httpx.ASGITransport(app=_app_with_failures(), raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", timeout=5.0
+    ) as client:
         await client.get("/boom", headers={"traceparent": INBOUND})
     (line,) = _completed(capsys)
     assert line["status"] == 500
