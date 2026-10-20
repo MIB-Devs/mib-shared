@@ -72,11 +72,10 @@ class JWKSCache:
     _lock: anyio.Lock = field(default_factory=anyio.Lock, init=False)
 
     def __post_init__(self) -> None:
-        # FastAPI 307s `…/jwks/` away from `…/jwks`, and the fetch does not follow.
+        """Strip the trailing slash (FastAPI 307s ``/jwks/`` away and the fetch does not follow) and
+        build the traced client: timeout, bounded retry and traceparent (FR-BE-21, FR-BE-25).
+        """
         self.jwks_url = self.jwks_url.rstrip("/")
-        # The client carries a timeout, a bounded retry and traceparent
-        # propagation, because this is an outbound call like any other
-        # (FR-BE-21, FR-BE-25).
         self._client = self.client or TracedAsyncClient(self.jwks_url, service="mib-identity-jwks")
 
     @property
@@ -114,14 +113,15 @@ class JWKSCache:
         return self.has_keys
 
     async def get(self, kid: str | None) -> PyJWK:
-        """The key for this ``kid``, fetching only when it might help."""
+        """The key for this ``kid``, fetching only when it might help.
+
+        An unrecognised kid fetches even while the cache is fresh, or a rotation stays invisible
+        until the TTL lapses.
+        """
         key = self._keys.get(kid) if kid else self._single_key()
         if key is not None and not self._expired:
             return key
 
-        # Two different reasons to be here, and they need different handling: an
-        # unrecognised kid must fetch even though the cache is fresh, or a
-        # rotation is invisible until the TTL lapses.
         await self._refresh(unknown_kid=key is None)
 
         key = self._keys.get(kid) if kid else self._single_key()
@@ -143,34 +143,30 @@ class JWKSCache:
         return None
 
     async def _refresh(self, *, unknown_kid: bool = False) -> None:
+        """Fetch and replace the cached keys, under the lock.
+
+        A fresh cache stops the refresh unless the kid was unknown, so rotation works. Rate limited
+        to ``min_refresh_interval``, so unknown kids cannot become a stream of outbound calls.
+        The URL is absolute because a bare ``GET ""`` requests ``/jwks/`` and FastAPI's 307 is not
+        followed
+        (#36). On a failed, unparseable or empty response it keeps verifying with the cached keys:
+        an identity outage must not take every service's authentication with it. A fetched set
+        replaces the cache rather than merging, so a removed key stops being accepted.
+        """
         async with self._lock:
-            # Another task may have refreshed while this one waited. A fresh
-            # cache is only a reason to stop if we are here because of staleness
-            # - an unknown kid still needs a fetch, which is what makes rotation
-            # work rather than failing for a whole TTL.
             if self._keys and not self._expired and not unknown_kid:
                 return
             since_attempt = time.monotonic() - self._last_attempt
             if self._keys and since_attempt < self.min_refresh_interval:
-                # Rate limited: serve what is cached rather than letting a stream
-                # of unknown kids become a stream of outbound calls.
                 return
             self._last_attempt = time.monotonic()
 
             assert self._client is not None
-            # Absolute URL on purpose. `TracedAsyncClient(jwks_url)` + `GET ""`
-            # makes httpx request `…/jwks/` (trailing slash); FastAPI then 307s
-            # to `…/jwks`, the client does not follow, and the cache stays empty
-            # (#36). An absolute path keeps the published endpoint exact.
             response = await self._client.get(
                 self.jwks_url,
                 fallback=lambda cause: cause,
             )
             if not hasattr(response, "status_code") or response.status_code != 200:
-                # Fail STATIC, not open and not closed: keep verifying with the
-                # keys we have. An identity outage must not take every service's
-                # authentication with it - that is the point of local
-                # verification.
                 logger.warning(
                     "jwks_refresh_failed",
                     url=self.jwks_url,
@@ -178,7 +174,6 @@ class JWKSCache:
                     reason=type(response).__name__
                     if not hasattr(response, "status_code")
                     else response.status_code,
-                    # A redirect is not followed; say where it pointed.
                     location=getattr(response, "headers", {}).get("location"),
                 )
                 return
@@ -193,14 +188,13 @@ class JWKSCache:
                 logger.warning("jwks_empty", url=self.jwks_url, cached_keys=len(self._keys))
                 return
 
-            # Replace rather than merge: a key identity has deliberately removed
-            # must stop being accepted, which is what makes revocation possible.
             self._keys = keys
             self._fetched_at = time.monotonic()
             logger.info("jwks_refreshed", url=self.jwks_url, keys=len(keys))
 
     @staticmethod
     def _parse(document: Any) -> dict[str, PyJWK]:
+        """Keys by ``kid``; one malformed entry is logged and skipped, not fatal to the document."""
         keys: dict[str, PyJWK] = {}
         for entry in (document or {}).get("keys", []):
             kid = entry.get("kid")
@@ -209,7 +203,6 @@ class JWKSCache:
             try:
                 keys[kid] = PyJWK.from_dict(entry)
             except (jwt.PyJWKError, jwt.InvalidKeyError, KeyError, ValueError):
-                # One malformed entry must not discard the rest of the document.
                 logger.warning("jwks_key_rejected", kid=kid)
         return keys
 

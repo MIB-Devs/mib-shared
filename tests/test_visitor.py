@@ -33,7 +33,7 @@ def test_surrounding_whitespace_is_ignored():
 
 
 def test_no_header_is_unknown_not_the_peer_address():
-    # TestClient's peer is "testclient"; production's is the gateway.
+    """TestClient's peer is "testclient"; production's is the gateway."""
     assert get({}) is None
 
 

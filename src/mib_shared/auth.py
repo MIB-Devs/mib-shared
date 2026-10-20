@@ -68,8 +68,7 @@ class KeyProvider(Protocol):
 
 
 def _unauthenticated(detail: str) -> HTTPException:
-    # 401 with WWW-Authenticate, so a client can tell "log in again" from
-    # "you may not do this" without parsing prose.
+    """401 with ``WWW-Authenticate``, so a client can tell "log in again" from "not allowed"."""
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=detail,
@@ -90,6 +89,10 @@ async def verify_access_token(
     ``audience`` is required, not optional. A separate administrator audience is
     what makes an admin token refused by public endpoints and vice versa
     (FR-SSO-11), and that only holds if every call states which audience it is.
+
+    An unexpected algorithm is logged (a misconfigured issuer or a probe). A wrong audience gets
+    the generic rejection, so a caller learns nothing about what a service expects. The user id
+    is bound to the log context next to ``trace_id`` (NFR-16); never the token or capabilities.
     """
     try:
         header = jwt.get_unverified_header(token)
@@ -97,8 +100,6 @@ async def verify_access_token(
         raise _unauthenticated("Malformed token.") from None
 
     if header.get("alg") not in ALLOWED_ALGORITHMS:
-        # Logged, because a token arriving with an unexpected algorithm is either
-        # a misconfigured issuer or someone probing.
         logger.warning("token_algorithm_refused", algorithm=header.get("alg"))
         raise _unauthenticated("Unsupported token algorithm.")
 
@@ -127,8 +128,6 @@ async def verify_access_token(
     except jwt.ExpiredSignatureError:
         raise _unauthenticated("Token has expired.") from None
     except jwt.InvalidAudienceError:
-        # Deliberately the same message as any other rejection: which audience a
-        # service expects is not something an unauthenticated caller needs told.
         raise _unauthenticated("Token is not valid here.") from None
     except jwt.PyJWTError:
         raise _unauthenticated("Token is not valid here.") from None
@@ -141,8 +140,6 @@ async def verify_access_token(
         expires_at=claims.get("exp"),
         claims=claims,
     )
-    # Put the caller on every subsequent log line for this request, next to the
-    # trace_id (NFR-16). Never the token, and never the capability list.
     structlog.contextvars.bind_contextvars(user_id=principal.user_id)
     return principal
 
@@ -184,15 +181,13 @@ def require_capability(
     """
 
     async def _dependency(credentials: BearerCredentials) -> Principal:
+        """401 if unauthenticated; 403 if the capability is missing (re-login would not help)."""
         if credentials is None or not credentials.credentials:
             raise _unauthenticated("Authentication required.")
         principal = await verify_access_token(
             credentials.credentials, keys=keys, audience=audience, issuer=issuer
         )
         if not principal.has(capability):
-            # 403, not 401: the caller is authenticated and simply may not do
-            # this. Re-authenticating would not help, and telling them to log in
-            # again sends them round a loop.
             logger.info(
                 "capability_denied",
                 capability=capability,
@@ -266,21 +261,18 @@ def require_service(
     permitted = frozenset(allowed)
 
     async def _dependency(request: Request) -> ServiceCaller:
+        """403 for every failure alike (unknown caller, no credential configured, wrong token, not
+        allowed here), so a caller cannot enumerate which services exist. Every candidate token is
+        compared with ``hmac.compare_digest`` and none short-circuits, so timing does not leak
+        which matched.
+        """
         name = (request.headers.get(SERVICE_HEADER) or "").strip().lower()
         presented = request.headers.get(SERVICE_TOKEN_HEADER) or ""
         credentials = _service_credentials(env)
         accepted = credentials.get(name, ())
 
-        # One rejection for every failure mode: unknown caller, no credential
-        # configured, wrong token, or a caller that is authentic but not allowed
-        # here. Distinguishing them in the response would let a caller enumerate
-        # which services exist and which are configured.
         ok = bool(name) and bool(presented) and bool(accepted)
         if ok:
-            # Every candidate is compared, and the comparisons are not
-            # short-circuited on the first match: `any(...)` over a generator
-            # would stop early, and how long the loop ran would leak which
-            # position matched. Constant time per comparison, constant count.
             matches = [hmac.compare_digest(presented, token) for token in accepted]
             ok = any(matches)
         if ok:

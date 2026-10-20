@@ -48,7 +48,7 @@ def test_sends_a_signed_authorization_header():
     get_object(build(handler), "v1/html/some-id")
 
     assert seen["auth"].startswith("OSS test-key-id:")
-    assert seen["date"]  # a real RFC 1123 date was sent
+    assert seen["date"]
     assert seen["url"].endswith("/v1/html/some-id")
 
 
@@ -221,7 +221,7 @@ def test_put_from_a_file_sends_it_sized_with_its_md5(tmp_path):
 
     from mib_shared import oss
 
-    body = bytes(range(256)) * (oss._FILE_CHUNK // 256 * 2 + 3)  # three chunks
+    body = bytes(range(256)) * (oss._FILE_CHUNK // 256 * 2 + 3)
     path = tmp_path / "source.pdf"
     path.write_bytes(body)
     seen = {}

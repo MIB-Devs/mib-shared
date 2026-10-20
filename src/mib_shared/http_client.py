@@ -102,8 +102,7 @@ class _TracedBase:
         retry: RetryPolicy | None = None,
         service: str | None = None,
     ) -> None:
-        # The timeout is never left to a library default, which for some
-        # transports means no timeout at all.
+        """Never leaves the timeout to a library default, which for some transports means none."""
         self._timeout = httpx.Timeout(timeout) if timeout is not None else DEFAULT_TIMEOUT
         self._retry = retry or RetryPolicy()
         self._service = service or base_url
@@ -147,14 +146,14 @@ class _TracedBase:
         last: BaseException | httpx.Response | None,
         fallback: Callable[[BaseException | httpx.Response], Any] | None,
     ) -> Any:
+        """Raise once the retry budget is spent, or return ``fallback``'s result, which turns a
+        dependency failure into degraded service rather than a 500 (FR-BE-21).
+        """
         self._log_exhausted(method, url, attempts, last)
         exhausted = RetryBudgetExceeded(
             method, url, attempts, last if isinstance(last, BaseException) else None
         )
         if fallback is not None:
-            # A defined fallback is what turns a dependency failure into degraded
-            # service rather than a 500 (FR-BE-21) — lexical search when the
-            # embedding service is down, for instance.
             return fallback(last if last is not None else exhausted)
         raise exhausted
 
@@ -194,6 +193,10 @@ class TracedAsyncClient(_TracedBase):
         headers: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> Any:
+        """One call with bounded retry. When the budget is spent on a failing status and the caller
+        declared a ``fallback``, that status gets the degraded path too, as a transport error does
+        (FR-BE-21).
+        """
         attempts = self._attempts_for(method, idempotent)
         last: BaseException | httpx.Response | None = None
 
@@ -217,9 +220,6 @@ class TracedAsyncClient(_TracedBase):
                     await anyio.sleep(self._retry.delay_for(attempt))
                     continue
                 if fallback is not None:
-                    # The retry budget is spent and the caller declared a
-                    # degraded path — a failing status is exactly the case
-                    # FR-BE-21's fallback exists for, same as a transport error.
                     self._log_exhausted(method, url, attempts, response)
                     return fallback(response)
             return response

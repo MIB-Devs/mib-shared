@@ -60,7 +60,7 @@ def test_valid_traceparent_is_parsed():
     ],
 )
 def test_unusable_traceparent_is_treated_as_absent(value):
-    # An upstream sending junk must not cost the caller their request.
+    """An upstream sending junk must not cost the caller their request."""
     assert parse_traceparent(value) is None
 
 
@@ -100,7 +100,7 @@ async def test_inbound_trace_is_continued_into_the_handler():
 
 @pytest.mark.anyio
 async def test_trace_ids_are_echoed_on_a_successful_response():
-    # The reference support asks for must exist before anything went wrong.
+    """The reference support asks for must exist before anything goes wrong."""
     resp = await _get(_app(), "/echo", {"traceparent": INBOUND})
     assert resp.headers["x-trace-id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
     assert resp.headers["x-request-id"]
@@ -265,20 +265,17 @@ def test_ids_are_gone_once_the_context_exits(capsys):
 # --- across a queue hop (FR-BE-13) -----------------------------------------
 
 def test_carrier_round_trip_keeps_one_trace_across_the_job_boundary():
+    """The carrier is what gets persisted on the job record at enqueue time."""
     request_ctx = new_trace_context(INBOUND, request_id="req-9")
     with trace_context(request_ctx):
-        # What gets persisted on the job record at enqueue time.
         carrier = trace_carrier()
 
     assert carrier["traceparent"].startswith("00-4bf92f3577b34da6a3ce929d0e0e4736-")
     assert carrier["x-request-id"] == "req-9"
 
-    # Later, in the worker process:
     with restored_trace(carrier) as job_ctx:
         assert job_ctx.trace_id == request_ctx.trace_id
         assert job_ctx.request_id == "req-9"
-        # The job is its own span, so its work is distinguishable from the
-        # request that enqueued it.
         assert job_ctx.span_id != request_ctx.span_id
 
 

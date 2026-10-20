@@ -78,9 +78,10 @@ def own_tables_only(metadata: MetaData) -> Callable[[str | None, str, dict], boo
     schema = metadata.schema
 
     def include_name(name: str | None, type_: str, parent_names: dict) -> bool:
+        """The default schema (``None``) is refused: reflecting it pulls in whatever sits in
+        ``public``.
+        """
         if type_ == "schema":
-            # `None` is the default schema. Reflecting it pulls in whatever
-            # happens to be sitting in `public`.
             return name == schema
         if type_ == "table":
             return name in {table.name for table in metadata.sorted_tables}
@@ -99,6 +100,9 @@ def migration_options(
     `compare_type` or `compare_server_default` and `alembic check` stops noticing
     a changed column type or default while still reporting success. Being a plain
     function, it can be asserted on directly.
+
+    ``compare_type`` and ``compare_server_default`` default to False in Alembic and are most of the
+    point of having metadata.
     """
     return {
         "target_metadata": metadata,
@@ -106,8 +110,6 @@ def migration_options(
         "include_name": own_tables_only(metadata),
         "version_table": version_table,
         "version_table_schema": metadata.schema,
-        # Both default to False in Alembic, and both are most of the point of
-        # having metadata at all.
         "compare_type": True,
         "compare_server_default": True,
     }

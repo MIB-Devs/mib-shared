@@ -84,11 +84,10 @@ def test_the_convention_covers_every_constraint_type():
 
 
 def test_the_filter_admits_this_schema_and_refuses_every_other(meta):
+    """None is the default schema: reflecting it would pull in whatever is in ``public``."""
     include = own_tables_only(meta)
     assert include("identity", "schema", {}) is True
     assert include("regulations", "schema", {}) is False
-    # None is the default schema — reflecting it would pull in whatever is in
-    # `public`.
     assert include(None, "schema", {}) is False
 
 

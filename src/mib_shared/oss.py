@@ -69,8 +69,10 @@ class ObjectListing:
 
 
 def _parse_listing(body: bytes) -> ObjectListing:
-    # The body comes from our own bucket over TLS; expat's entity-expansion limits
-    # (Python 3.12) cover the rest. `{*}` matches with or without a namespace.
+    """Parse a ListObjects page. The body is from our own bucket over TLS, so expat's entity limits
+    suffice; ``{*}`` matches with or without a namespace. Without a delimiter OSS always sends
+    ``NextMarker``; the last key is the same.
+    """
     root = ET.fromstring(body)
     entries = [
         ObjectEntry(
@@ -82,7 +84,6 @@ def _parse_listing(body: bytes) -> ObjectListing:
     ]
     if root.findtext("{*}IsTruncated", "false").strip().lower() != "true":
         return ObjectListing(entries=entries, next_marker=None)
-    # Without a delimiter OSS always sends NextMarker; the last key is the same.
     marker = root.findtext("{*}NextMarker") or (entries[-1].key if entries else None)
     return ObjectListing(entries=entries, next_marker=marker)
 
@@ -209,6 +210,9 @@ class OSSClient:
         `body` may be a path to a file instead of bytes: the file is read in 1 MiB
         pieces for its MD5 and again for the upload, with its `Content-Length`,
         so a source of hundreds of MB never sits in memory (`mib-ingestion#75`).
+
+        Content-Length is set explicitly for a file body, so httpx sends a sized body rather than
+        chunked.
         """
         key = key.lstrip("/")
         resource = f"/{self._bucket}/{key}"
@@ -217,7 +221,6 @@ class OSSClient:
         content: bytes | _FileBody
         if isinstance(body, os.PathLike):
             content_md5, size = await anyio.to_thread.run_sync(_file_md5_and_size, body)
-            # Set explicitly, so httpx sends a sized body rather than chunked.
             extra["Content-Length"] = str(size)
             content = _FileBody(body)
         else:
@@ -274,10 +277,11 @@ class OSSClient:
         exhausted (FR-BE-21). A non-2xx answer that is not retried (a 403 for a
         key without list permission) raises `httpx.HTTPStatusError`: unlike a
         GET's 404, it has no meaning a caller could act on.
+
+        Query parameters other than OSS's sub-resources are not signed.
         """
         if not 1 <= max_keys <= _MAX_LIST_KEYS:
             raise ValueError(f"max_keys must be 1..{_MAX_LIST_KEYS}")
-        # Query parameters other than OSS's sub-resources are not signed.
         resource = f"/{self._bucket}/"
         date = format_datetime(datetime.now(UTC), usegmt=True)
         headers = {

@@ -29,12 +29,13 @@ class FakeIdentity:
         self.keys = {kid: _jwk(kid) for kid in kids}
 
     def transport(self) -> httpx.MockTransport:
+        """Answers a trailing-slash path with FastAPI's 307 (#36), which the client does not follow.
+        """
         def handler(request: httpx.Request) -> httpx.Response:
             self.calls += 1
             path = request.url.path
             self.requested.append(path)
             if path.endswith("/") and path != "/":
-                # What FastAPI does to a trailing slash (#36); the client does not follow.
                 target = str(request.url.copy_with(path=path.rstrip("/")))
                 return httpx.Response(307, headers={"location": target})
             if self.status != 200:
@@ -94,7 +95,12 @@ async def test_an_unknown_kid_triggers_a_refresh_so_rotation_works():
 
 @pytest.mark.anyio
 async def test_unknown_kids_cannot_be_used_as_a_fetch_amplifier():
-    """Trap 2: otherwise a stream of random kids becomes a stream of outbound calls."""
+    """Trap 2: otherwise a stream of random kids becomes a stream of outbound calls.
+
+    The cooldown runs from the last attempt, including the successful one, so twenty unknown kids
+    cost no outbound call. The trade (DEFAULT_MIN_REFRESH_INTERVAL): a rotation within the cooldown
+    is not seen at once, so identity must publish a key before signing with it.
+    """
     identity = FakeIdentity("key-1")
     cache = identity.cache(ttl_seconds=300, min_refresh_interval=60)
     await cache.get("key-1")
@@ -104,11 +110,6 @@ async def test_unknown_kids_cannot_be_used_as_a_fetch_amplifier():
         with pytest.raises(KeyUnavailable):
             await cache.get(f"garbage-{i}")
 
-    # Still one. The cooldown runs from the last ATTEMPT, including the
-    # successful one above, so twenty unknown kids cost zero outbound calls
-    # rather than twenty. The trade is documented on DEFAULT_MIN_REFRESH_INTERVAL:
-    # a rotation within the cooldown is not seen immediately, which is why
-    # identity must publish a key before signing with it.
     assert identity.calls == 1
 
 
@@ -120,13 +121,13 @@ async def test_a_failed_refresh_keeps_serving_cached_keys():
     that is the entire benefit of verifying locally.
     """
     identity = FakeIdentity("key-1")
-    cache = identity.cache(ttl_seconds=-1, min_refresh_interval=0)  # always stale
+    cache = identity.cache(ttl_seconds=-1, min_refresh_interval=0)
     await cache.get("key-1")
 
     identity.status = 503
     for _ in range(3):
         assert await cache.get("key-1") is not None
-    assert identity.calls > 1  # it did try
+    assert identity.calls > 1
 
 
 @pytest.mark.anyio
@@ -142,7 +143,7 @@ async def test_with_nothing_cached_a_failed_refresh_fails_closed():
 async def test_a_withdrawn_key_stops_being_accepted():
     """Replace, not merge — otherwise a revoked key is honoured forever."""
     identity = FakeIdentity("key-1")
-    cache = identity.cache(ttl_seconds=-1, min_refresh_interval=0)  # always stale
+    cache = identity.cache(ttl_seconds=-1, min_refresh_interval=0)
     await cache.get("key-1")
 
     identity.serve("key-2")
@@ -179,7 +180,7 @@ async def test_one_malformed_entry_does_not_discard_the_document():
 @pytest.mark.anyio
 async def test_an_empty_document_does_not_wipe_the_cache():
     identity = FakeIdentity("key-1")
-    cache = identity.cache(ttl_seconds=-1, min_refresh_interval=0)  # always stale
+    cache = identity.cache(ttl_seconds=-1, min_refresh_interval=0)
     await cache.get("key-1")
 
     identity.body = {"keys": []}
