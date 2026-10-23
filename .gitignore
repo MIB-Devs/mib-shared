@@ -18,7 +18,6 @@ htmlcov/
 # Secrets / env (never commit — NFR-12, OPS-15)
 .env
 .env.*
-!.env.example
 # Editors / OS
 .idea/
 .vscode/
