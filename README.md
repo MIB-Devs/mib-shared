@@ -448,8 +448,11 @@ repos (§8.3).
 
 ## Conventions
 
-- Config comes from the environment only — never commit secrets (NFR-12). Copy
-  `.env.example` to `.env` for local development.
+- Config comes from the environment only — never commit secrets (NFR-12). A service has no
+  `.env.example` of its own: its variables are set in `mib-infra/services/<name>/compose.yml`,
+  with their values in `mib-infra/.env.example`, so a value that must be chosen on purpose
+  has no default to be left at. To run outside Docker, export them in your shell or a
+  gitignored `.env`.
 - Cross-service calls go over HTTP against another service's published API,
   never its database (FR-BE-14). Every outbound call has a timeout, bounded
   retry, and a defined fallback (FR-BE-21) — enforced by `mib-check-timeouts`
