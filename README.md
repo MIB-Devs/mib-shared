@@ -75,6 +75,7 @@ never a moved tag.
 | `0.13.0` | `mib_shared.guest`: the anonymous visitor's token (`mint_guest_token`, `verify_guest_token`, `guest_id` over `X-Guest-Token`) and the daily allowance (`consume`, `release`, `status` over four Redis set commands, resetting at 00:00 WIB, failing closed with `AllowanceUnavailable`). For the guest chat allowance, the search teaser and the cookie (`mib-ai#2`, `mib-regulations#34`, `mib-web#17`) |
 | `0.13.1` | `JWKSCache` requests the absolute `jwks_url` so httpx does not append a trailing slash that FastAPI 307s away from the published endpoint (#36) |
 | `0.14.0` | `TracingMiddleware` logs one `request_completed` line per request (method, path, status, `duration_ms`, with the bound `trace_id`), so a handled 401, 403, 429 or 503 is found under the reference a user quotes. `/health`, `/ready` and `/metrics` are skipped (#38). Also `mib-check-function-comments`: fails the build on a `#` comment inside a function body, so the docstring carries it; tool directives are exempt |
+| `0.15.0` | `mib_shared.features`: the feature switches behind `FEATURES_OFF` (`parse_features_off` validates a comma-separated list against the fixed `FEATURES` and fails on an unknown name; `require_feature` is a FastAPI dependency that answers 404 while a feature is off; `feature_enabled`). One list in `mib-infra`, read the same way by every service (`mib-infra#107`) |
 
 ### Migrating to a published wheel later
 
