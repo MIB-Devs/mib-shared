@@ -26,7 +26,16 @@ from mib_shared.http_client import RetryBudgetExceeded, RetryPolicy, TracedAsync
 
 
 class GenerationError(Exception):
-    """Base class, so a caller can catch every failure from one call."""
+    """Base class, so a caller can catch every failure from one call.
+
+    `status_code` is the HTTP status the endpoint answered with, None when there was none
+    (a timeout, a refused connection, an unreadable body). A caller that treats a refused key
+    (401, 403) differently from a bad request reads it here.
+    """
+
+    def __init__(self, message: str = "", *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class GenerationUnavailable(GenerationError):
@@ -43,10 +52,14 @@ class TransientGenerationError(GenerationError):
 
 @dataclass(frozen=True)
 class Usage:
-    """Tokens the call was billed for. Input above 32k tokens is billed at a higher rate."""
+    """Tokens the call was billed for. Input above 32k tokens is billed at a higher rate.
+
+    `reasoning_tokens` are part of `output_tokens`: a thinking model bills its reasoning as output.
+    """
 
     input_tokens: int
     output_tokens: int
+    reasoning_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -64,6 +77,11 @@ class GenerationCaller:
     nothing here is safe to share across event loops. The default `timeout` and
     `retry` belong to the caller, since a summary wants a short one and a cleanup
     segment a long one, and `complete` can override the timeout for one call.
+
+    `temperature` and `max_tokens` are left out of the request when None, which is the model's
+    own default; `max_tokens` cuts off an answer that loops. `connections` sizes the pool:
+    httpx keeps 100 by default, and a caller running more calls than that at once waits for a
+    connection and ends in a `PoolTimeout`.
     """
 
     def __init__(
@@ -74,6 +92,9 @@ class GenerationCaller:
         model: str,
         timeout: float = 15.0,
         thinking: bool = False,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        connections: int | None = None,
         retry: RetryPolicy | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         service: str = "generation",
@@ -87,12 +108,16 @@ class GenerationCaller:
         self._model = model
         self._thinking = thinking
         self._api_key = api_key
+        self._temperature = temperature
+        self._max_tokens = max_tokens
+        pool = {"limits": httpx.Limits(max_connections=connections)} if connections else {}
         self._client = TracedAsyncClient(
             base_url.rstrip("/"),
             timeout=timeout,
             retry=retry,
             service=service,
             transport=transport,
+            **pool,
         )
 
     @property
@@ -129,6 +154,10 @@ class GenerationCaller:
         }
         if json_output:
             payload["response_format"] = {"type": "json_object"}
+        if self._temperature is not None:
+            payload["temperature"] = self._temperature
+        if self._max_tokens:
+            payload["max_tokens"] = self._max_tokens
         if not (self._thinking if thinking is None else thinking):
             payload["enable_thinking"] = False
         headers = {
@@ -185,7 +214,11 @@ def _usage_from(body: dict) -> Usage | None:
     received = usage.get("completion_tokens")
     if not all(isinstance(n, int) and not isinstance(n, bool) for n in (sent, received)):
         return None
-    return Usage(input_tokens=sent, output_tokens=received)
+    details = usage.get("completion_tokens_details")
+    reasoning = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    if not isinstance(reasoning, int) or isinstance(reasoning, bool):
+        reasoning = 0
+    return Usage(input_tokens=sent, output_tokens=received, reasoning_tokens=reasoning)
 
 
 def _status_error(response: httpx.Response) -> GenerationError:
@@ -196,8 +229,12 @@ def _status_error(response: httpx.Response) -> GenerationError:
     """
     detail = response.text[:300]
     if response.status_code == httpx.codes.TOO_MANY_REQUESTS or response.status_code >= 500:
-        return TransientGenerationError(f"HTTP {response.status_code}: {detail}")
-    return PermanentGenerationError(f"HTTP {response.status_code}: {detail}")
+        return TransientGenerationError(
+            f"HTTP {response.status_code}: {detail}", status_code=response.status_code
+        )
+    return PermanentGenerationError(
+        f"HTTP {response.status_code}: {detail}", status_code=response.status_code
+    )
 
 
 __all__ = [

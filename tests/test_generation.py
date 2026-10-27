@@ -73,6 +73,56 @@ def test_the_usage_comes_back_with_the_text():
     assert result.usage == Usage(input_tokens=120, output_tokens=30)
 
 
+def test_reasoning_tokens_are_counted_inside_the_output():
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 900,
+        "completion_tokens_details": {"reasoning_tokens": 700},
+    }
+    assert complete(build(lambda r: reply(usage=usage))).usage == Usage(100, 900, 700)
+
+
+def test_temperature_and_max_tokens_are_sent_only_when_set():
+    seen: list[dict] = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return reply()
+
+    complete(build(handler))
+    complete(build(handler, temperature=0.0, max_tokens=512))
+
+    assert "temperature" not in seen[0] and "max_tokens" not in seen[0]
+    assert (seen[1]["temperature"], seen[1]["max_tokens"]) == (0.0, 512)
+
+
+def test_a_pool_size_is_accepted():
+    assert complete(build(lambda r: reply(), connections=300)).text == "a summary"
+
+
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        (401, PermanentGenerationError),
+        (400, PermanentGenerationError),
+        (503, TransientGenerationError),
+    ],
+)
+def test_an_error_from_a_status_carries_it(status, error):
+    with pytest.raises(error) as caught:
+        complete(build(lambda r: httpx.Response(status)))
+    assert caught.value.status_code == status
+
+
+def test_an_error_without_a_response_has_no_status():
+    def handler(request):
+        raise httpx.ConnectError("down")
+
+    with pytest.raises(TransientGenerationError) as caught:
+        complete(build(handler))
+    assert caught.value.status_code is None
+
+
 @pytest.mark.parametrize(
     "extra",
     [
