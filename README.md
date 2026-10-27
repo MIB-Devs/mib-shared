@@ -77,6 +77,7 @@ never a moved tag.
 | `0.14.0` | `TracingMiddleware` logs one `request_completed` line per request (method, path, status, `duration_ms`, with the bound `trace_id`), so a handled 401, 403, 429 or 503 is found under the reference a user quotes. `/health`, `/ready` and `/metrics` are skipped (#38). Also `mib-check-function-comments`: fails the build on a `#` comment inside a function body, so the docstring carries it; tool directives are exempt |
 | `0.15.0` | `mib_shared.features`: the feature switches behind `FEATURES_OFF` (`parse_features_off` validates a comma-separated list against the fixed `FEATURES` and fails on an unknown name; `require_feature` is a FastAPI dependency that answers 404 while a feature is off; `feature_enabled`). One list in `mib-infra`, read the same way by every service (`mib-infra#107`) |
 | `0.16.0` | `mib_shared.generation.GenerationCaller`: one bounded call against an OpenAI-compatible chat-completions endpoint, extracted out of `mib-ai`'s client. `complete` returns a `Completion` (the text and its `Usage`, input and output tokens, or None when the response has none), the timeout and retry policy are the caller's with a per-call timeout override, `temperature`, `max_tokens` and the pool size are optional, the reasoning tokens are counted inside the output, and a failure is one of `GenerationUnavailable`, `PermanentGenerationError` or `TransientGenerationError`, which carry the HTTP `status_code` when there was one. No key, model name or prompt lives here. For `mib-ai` and the cleanup and correction jobs of `mib-ingestion` (`mib-shared#28`) |
+| `0.16.1` | `JWKSCache` honours the JWKS response's `Cache-Control: max-age` (`no-store`, `no-cache` and `0` count as the shortest lifetime), between `min_refresh_interval` and the new `max_ttl_seconds` (3600 s), with `ttl_seconds` as the fallback. The issuer can now shorten the propagation window ahead of a key rotation (`mib-shared#12`, FR-SSO-02). Nothing changes until `mib-identity` sends the header |
 
 ### Migrating to a published wheel later
 
@@ -161,6 +162,11 @@ One operational rule follows from the cooldown: **publish a key, then start
 signing with it.** Identity should add a key to the JWKS and wait longer than
 `min_refresh_interval` before issuing tokens against it. Then no cooldown length
 can cause a spurious rejection.
+
+Identity can set that cadence itself: `JWKSCache` takes a JWKS response's `Cache-Control: max-age` as the
+lifetime of the keys it delivered, in place of `ttl_seconds`, kept between `min_refresh_interval` and
+`max_ttl_seconds` (default one hour). `no-store`, `no-cache` and `max-age=0` therefore mean the shortest
+lifetime allowed, never a fetch per request, and a missing or unreadable header leaves `ttl_seconds`.
 
 ### Endpoints that serve visitors and members alike
 

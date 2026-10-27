@@ -23,6 +23,7 @@ class FakeIdentity:
         self.requested: list[str] = []
         self.status = 200
         self.body: dict | None = None
+        self.headers: dict[str, str] = {}
 
     def serve(self, *kids: str) -> None:
         """Rotate: publish a different set of keys from now on."""
@@ -40,7 +41,9 @@ class FakeIdentity:
                 return httpx.Response(307, headers={"location": target})
             if self.status != 200:
                 return httpx.Response(self.status)
-            return httpx.Response(200, json=self.body or {"keys": list(self.keys.values())})
+            return httpx.Response(
+                200, json=self.body or {"keys": list(self.keys.values())}, headers=self.headers
+            )
 
         return httpx.MockTransport(handler)
 
@@ -192,3 +195,110 @@ async def test_static_key_needs_no_network_at_all():
     static = StaticKey(public_key="-----BEGIN PUBLIC KEY-----\nx\n-----END PUBLIC KEY-----")
     assert await static.get() == static.public_key
     assert await static.get("any-kid") == static.public_key
+
+
+class Clock:
+    """Replaces `time.monotonic` in `mib_shared.keys`, so a test moves time by hand."""
+
+    def __init__(self, monkeypatch) -> None:
+        self.now = 1000.0
+        monkeypatch.setattr("mib_shared.keys.time.monotonic", lambda: self.now)
+
+
+async def _calls_after(identity: FakeIdentity, cache: JWKSCache, clock: Clock, wait: float) -> int:
+    """Fetch once, let `wait` seconds pass, ask for the key again, and count the fetches."""
+    await cache.get("key-1")
+    clock.now += wait
+    await cache.get("key-1")
+    return identity.calls
+
+
+@pytest.mark.anyio
+async def test_a_max_age_shorter_than_the_ttl_shortens_it(monkeypatch):
+    identity = FakeIdentity("key-1")
+    identity.headers = {"cache-control": "public, max-age=60"}
+    clock = Clock(monkeypatch)
+    cache = identity.cache(ttl_seconds=600, min_refresh_interval=30)
+
+    assert await _calls_after(identity, cache, clock, wait=90) == 2
+
+
+@pytest.mark.anyio
+async def test_a_max_age_is_not_waited_out_before_it_lapses(monkeypatch):
+    identity = FakeIdentity("key-1")
+    identity.headers = {"cache-control": "max-age=60"}
+    clock = Clock(monkeypatch)
+    cache = identity.cache(ttl_seconds=600, min_refresh_interval=30)
+
+    assert await _calls_after(identity, cache, clock, wait=45) == 1
+
+
+@pytest.mark.anyio
+async def test_a_max_age_longer_than_the_ceiling_is_clamped(monkeypatch):
+    identity = FakeIdentity("key-1")
+    identity.headers = {"cache-control": "max-age=999999"}
+    clock = Clock(monkeypatch)
+    cache = identity.cache(ttl_seconds=600, min_refresh_interval=30, max_ttl_seconds=900)
+
+    assert await _calls_after(identity, cache, clock, wait=901) == 2
+
+
+@pytest.mark.anyio
+async def test_a_max_age_longer_than_the_ttl_but_under_the_ceiling_is_honoured(monkeypatch):
+    identity = FakeIdentity("key-1")
+    identity.headers = {"cache-control": "max-age=1200"}
+    clock = Clock(monkeypatch)
+    cache = identity.cache(ttl_seconds=600, min_refresh_interval=30, max_ttl_seconds=3600)
+
+    assert await _calls_after(identity, cache, clock, wait=700) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("header", [None, "", "public", "max-age=abc", "max-age=-5", "s-maxage=5"])
+async def test_without_a_usable_max_age_the_ttl_applies(monkeypatch, header):
+    identity = FakeIdentity("key-1")
+    if header is not None:
+        identity.headers = {"cache-control": header}
+    clock = Clock(monkeypatch)
+    cache = identity.cache(ttl_seconds=600, min_refresh_interval=30)
+
+    assert await _calls_after(identity, cache, clock, wait=599) == 1
+    assert await _calls_after(identity, cache, clock, wait=2) == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("header", ["no-store", "no-cache", "max-age=0", "private, max-age=0"])
+async def test_no_store_and_zero_are_floored_by_the_refresh_interval(monkeypatch, header):
+    """An issuer's 0 must not turn every request into a call to identity."""
+    identity = FakeIdentity("key-1")
+    identity.headers = {"cache-control": header}
+    clock = Clock(monkeypatch)
+    cache = identity.cache(ttl_seconds=600, min_refresh_interval=30)
+
+    await cache.get("key-1")
+    for _ in range(20):
+        clock.now += 1
+        await cache.get("key-1")
+    assert identity.calls == 1
+
+    clock.now += 30
+    await cache.get("key-1")
+    assert identity.calls == 2
+
+
+@pytest.mark.anyio
+async def test_the_lifetime_follows_the_latest_response(monkeypatch):
+    identity = FakeIdentity("key-1")
+    identity.headers = {"cache-control": "max-age=60"}
+    clock = Clock(monkeypatch)
+    cache = identity.cache(ttl_seconds=600, min_refresh_interval=30)
+    await cache.get("key-1")
+
+    identity.headers = {}
+    clock.now += 61
+    await cache.get("key-1")
+    assert identity.calls == 2
+
+    clock.now += 300
+    await cache.get("key-1")
+    assert identity.calls == 2

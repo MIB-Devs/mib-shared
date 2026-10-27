@@ -17,6 +17,7 @@ traps:
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,6 +32,11 @@ from mib_shared.telemetry import get_logger
 logger = get_logger(__name__)
 
 DEFAULT_TTL_SECONDS = 600.0
+# The longest a JWKS response's Cache-Control may keep the cache: a hostile or misconfigured
+# header must not pin keys, and a removed key stays accepted for at most this long.
+DEFAULT_MAX_TTL_SECONDS = 3600.0
+_MAX_AGE = re.compile(r"(?:^|,)\s*max-age\s*=\s*(\d+)\s*(?:,|$)", re.IGNORECASE)
+_NO_CACHE = re.compile(r"(?:^|,)\s*(?:no-store|no-cache)\s*(?:,|$)", re.IGNORECASE)
 # The floor between fetch ATTEMPTS. It is what stops random kids being used as an
 # amplifier, and it has a consequence worth stating: because the cooldown starts
 # at the last attempt - including a successful one - a key rotated immediately
@@ -59,15 +65,21 @@ class JWKSCache:
 
     The fetch always goes to ``jwks_url`` (a trailing slash on it is dropped), not
     to an injected ``client``'s own ``base_url``.
+
+    The issuer sets the cadence: a response's ``Cache-Control: max-age`` replaces ``ttl_seconds``
+    for the keys it delivered, kept between ``min_refresh_interval`` and ``max_ttl_seconds``.
+    Without the header, ``ttl_seconds`` applies.
     """
 
     jwks_url: str
     ttl_seconds: float = DEFAULT_TTL_SECONDS
     min_refresh_interval: float = DEFAULT_MIN_REFRESH_INTERVAL
+    max_ttl_seconds: float = DEFAULT_MAX_TTL_SECONDS
     client: TracedAsyncClient | None = None
 
     _keys: dict[str, PyJWK] = field(default_factory=dict, init=False)
     _fetched_at: float = field(default=0.0, init=False)
+    _ttl: float = field(default=0.0, init=False)
     _last_attempt: float = field(default=0.0, init=False)
     _lock: anyio.Lock = field(default_factory=anyio.Lock, init=False)
 
@@ -76,11 +88,12 @@ class JWKSCache:
         build the traced client: timeout, bounded retry and traceparent (FR-BE-21, FR-BE-25).
         """
         self.jwks_url = self.jwks_url.rstrip("/")
+        self._ttl = self.ttl_seconds
         self._client = self.client or TracedAsyncClient(self.jwks_url, service="mib-identity-jwks")
 
     @property
     def _expired(self) -> bool:
-        return (time.monotonic() - self._fetched_at) > self.ttl_seconds
+        return (time.monotonic() - self._fetched_at) > self._ttl
 
     @property
     def has_keys(self) -> bool:
@@ -190,7 +203,26 @@ class JWKSCache:
 
             self._keys = keys
             self._fetched_at = time.monotonic()
-            logger.info("jwks_refreshed", url=self.jwks_url, keys=len(keys))
+            self._ttl = self._ttl_from(response.headers.get("cache-control"))
+            logger.info("jwks_refreshed", url=self.jwks_url, keys=len(keys), ttl=self._ttl)
+
+    def _ttl_from(self, cache_control: str | None) -> float:
+        """How long the keys just fetched may be served without asking again.
+
+        ``max-age`` wins, ``no-store`` and ``no-cache`` count as 0, and a missing or unreadable
+        header leaves ``ttl_seconds``. The result stays between ``min_refresh_interval``, so an
+        issuer's 0 cannot turn every request into a fetch, and ``max_ttl_seconds``.
+        """
+        if not cache_control:
+            return self.ttl_seconds
+        found = _MAX_AGE.search(cache_control)
+        if found:
+            seconds = float(found.group(1))
+        elif _NO_CACHE.search(cache_control):
+            seconds = 0.0
+        else:
+            return self.ttl_seconds
+        return min(max(seconds, self.min_refresh_interval), self.max_ttl_seconds)
 
     @staticmethod
     def _parse(document: Any) -> dict[str, PyJWK]:
