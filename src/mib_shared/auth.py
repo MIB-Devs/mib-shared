@@ -16,6 +16,7 @@ summary is.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import os
 from collections.abc import Iterable
@@ -212,38 +213,56 @@ class ServiceCaller:
     name: str
 
 
+def _digest(token: str) -> str:
+    """Hex SHA-256 of a token: the form a receiver can hold without being able to present it."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def _service_credentials(env: dict[str, str] | None = None) -> dict[str, tuple[str, ...]]:
-    """Caller name → accepted tokens, from ``MIB_SERVICE_TOKEN_<NAME>`` variables.
+    """Caller name → accepted token digests, from ``MIB_SERVICE_TOKEN_*`` variables.
+
+    Two forms are read, and both end up as digests so one comparison serves them:
+
+    * ``MIB_SERVICE_TOKEN_SHA256_<NAME>`` holds the hex SHA-256 of the caller's token. **This is the
+      form a receiver should hold.** A receiver that holds the token itself can present it, so a
+      compromised receiver can call every service as that caller; a digest can verify a token and
+      cannot be replayed as one (mib-infra#114).
+    * ``MIB_SERVICE_TOKEN_<NAME>`` holds the token itself. Still accepted, so a service can be moved
+      to the digest form one at a time and a deployed ``.env`` keeps working.
 
     Read from the environment rather than a config object so this stays free of
     domain settings, and so rotating one caller's token does not require touching
     every service's configuration.
 
-    **A variable may hold several comma-separated tokens, and all of them are
+    **A variable may hold several comma-separated values, and all of them are
     accepted.** That exists for one reason: rotating a shared secret otherwise
     requires both sides to restart at the same instant, and there is no such
     instant. With an overlap window the sequence is safe at every step —
 
-    1. add the new token to the *receiver* alongside the old one, restart it
+    1. add the new token (or its digest) to the *receiver* alongside the old one, restart it
     2. give the caller the new token, restart it
-    3. remove the old token from the receiver, restart it
+    3. remove the old value from the receiver, restart it
 
     — and at no point is a live caller presenting something the receiver refuses.
     Costing one comma now beats discovering the problem during a rotation.
 
     Empty entries are dropped, so a trailing comma or a half-edited variable
-    cannot become a credential that matches the empty string.
+    cannot become a credential that matches the empty string. A digest is compared in lower case.
     """
     source = env if env is not None else os.environ
     prefix = "MIB_SERVICE_TOKEN_"
-    creds: dict[str, tuple[str, ...]] = {}
+    digest_prefix = "MIB_SERVICE_TOKEN_SHA256_"
+    creds: dict[str, list[str]] = {}
     for name, value in source.items():
         if not name.startswith(prefix) or not value:
             continue
-        tokens = tuple(token.strip() for token in value.split(",") if token.strip())
-        if tokens:
-            creds[name[len(prefix) :].lower().replace("_", "-")] = tokens
-    return creds
+        is_digest = name.startswith(digest_prefix)
+        caller = name[len(digest_prefix if is_digest else prefix) :]
+        entries = (entry.strip() for entry in value.split(",") if entry.strip())
+        digests = [entry.lower() if is_digest else _digest(entry) for entry in entries]
+        if digests:
+            creds.setdefault(caller.lower().replace("_", "-"), []).extend(digests)
+    return {caller: tuple(digests) for caller, digests in creds.items()}
 
 
 def require_service(
@@ -262,7 +281,7 @@ def require_service(
 
     async def _dependency(request: Request) -> ServiceCaller:
         """403 for every failure alike (unknown caller, no credential configured, wrong token, not
-        allowed here), so a caller cannot enumerate which services exist. Every candidate token is
+        allowed here), so a caller cannot enumerate which services exist. Every candidate digest is
         compared with ``hmac.compare_digest`` and none short-circuits, so timing does not leak
         which matched.
         """
@@ -273,7 +292,8 @@ def require_service(
 
         ok = bool(name) and bool(presented) and bool(accepted)
         if ok:
-            matches = [hmac.compare_digest(presented, token) for token in accepted]
+            presented_digest = _digest(presented)
+            matches = [hmac.compare_digest(presented_digest, digest) for digest in accepted]
             ok = any(matches)
         if ok:
             ok = name in permitted
