@@ -78,6 +78,7 @@ never a moved tag.
 | `0.15.0` | `mib_shared.features`: the feature switches behind `FEATURES_OFF` (`parse_features_off` validates a comma-separated list against the fixed `FEATURES` and fails on an unknown name; `require_feature` is a FastAPI dependency that answers 404 while a feature is off; `feature_enabled`). One list in `mib-infra`, read the same way by every service (`mib-infra#107`) |
 | `0.16.0` | `mib_shared.generation.GenerationCaller`: one bounded call against an OpenAI-compatible chat-completions endpoint, extracted out of `mib-ai`'s client. `complete` returns a `Completion` (the text and its `Usage`, input and output tokens, or None when the response has none), the timeout and retry policy are the caller's with a per-call timeout override, `temperature`, `max_tokens` and the pool size are optional, the reasoning tokens are counted inside the output, and a failure is one of `GenerationUnavailable`, `PermanentGenerationError` or `TransientGenerationError`, which carry the HTTP `status_code` when there was one. No key, model name or prompt lives here. For `mib-ai` and the cleanup and correction jobs of `mib-ingestion` (`mib-shared#28`) |
 | `0.16.1` | `JWKSCache` honours the JWKS response's `Cache-Control: max-age` (`no-store`, `no-cache` and `0` count as the shortest lifetime), between `min_refresh_interval` and the new `max_ttl_seconds` (3600 s), with `ttl_seconds` as the fallback. The issuer can now shorten the propagation window ahead of a key rotation (`mib-shared#12`, FR-SSO-02). Nothing changes until `mib-identity` sends the header |
+| `0.17.0` | A receiver can hold the SHA-256 of a caller's service token instead of the token: `MIB_SERVICE_TOKEN_SHA256_<NAME>` (comma-separated for a rotation overlap). A compromised receiver no longer holds a credential it can present as that caller. `MIB_SERVICE_TOKEN_<NAME>` is still accepted, so each service moves over on its own (`mib-infra#114`) |
 
 ### Migrating to a published wheel later
 
@@ -237,8 +238,9 @@ await client.post("/internal/v1/retrieve", json=payload,
                   headers=service_call_headers("mib-ai"))
 ```
 
-Credentials come from `MIB_SERVICE_TOKEN_<CALLER>` environment variables and are
-compared in constant time. Every failure — unknown caller, missing credential,
+Credentials come from `MIB_SERVICE_TOKEN_SHA256_<CALLER>` environment variables (the hex
+SHA-256 of the caller's token, so a receiver cannot present it as that caller) or, still
+accepted, `MIB_SERVICE_TOKEN_<CALLER>` (the token itself). They are compared in constant time. Every failure — unknown caller, missing credential,
 wrong token, or an authentic service that is not on this endpoint's allowlist —
 returns the **same** 403, so a caller cannot enumerate which services exist or
 which are configured.
@@ -352,8 +354,9 @@ app.include_router(
 
 ### Rotating a service credential
 
-`MIB_SERVICE_TOKEN_<NAME>` may hold **several comma-separated tokens, and all of
-them are accepted.** That exists for one reason: rotating a shared secret
+`MIB_SERVICE_TOKEN_<NAME>` and `MIB_SERVICE_TOKEN_SHA256_<NAME>` may hold **several
+comma-separated values, and all of them are accepted** (a digest is the hex SHA-256 of
+a token, `printf %s "$TOKEN" | sha256sum`). That exists for one reason: rotating a shared secret
 otherwise requires both sides to restart at the same instant, and there is no
 such instant.
 

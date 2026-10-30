@@ -471,3 +471,68 @@ def test_one_callers_token_does_not_work_for_another():
     client = _service_app(env, ["mib-ai"])
     assert _call(client, name="mib-ai", token="admin-token").status_code == 403
     assert _call(client, name="mib-admin", token="admin-token").status_code == 403
+
+
+# --- a receiver that holds a digest, not the token (mib-infra#114) ---------
+
+
+def _sha256(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def test_a_receiver_holding_only_the_digest_accepts_the_token():
+    """The point of #114: the receiver verifies the caller without holding what it presents."""
+    client = _service_app({"MIB_SERVICE_TOKEN_SHA256_MIB_AI": _sha256("ai-secret")}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="ai-secret").json() == {"caller": "mib-ai"}
+
+
+def test_the_digest_is_not_itself_a_credential():
+    """A compromised receiver holds the digest; presenting it to another service must not work."""
+    digest = _sha256("ai-secret")
+    client = _service_app({"MIB_SERVICE_TOKEN_SHA256_MIB_AI": digest}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token=digest).status_code == 403
+
+
+def test_a_wrong_token_is_refused_by_a_digest_receiver():
+    client = _service_app({"MIB_SERVICE_TOKEN_SHA256_MIB_AI": _sha256("ai-secret")}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="other").status_code == 403
+
+
+def test_a_digest_in_capitals_matches():
+    """`sha256sum` prints lower case but a hand-copied value may not be."""
+    env = {"MIB_SERVICE_TOKEN_SHA256_MIB_AI": _sha256("ai-secret").upper()}
+    client = _service_app(env, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="ai-secret").status_code == 200
+
+
+def test_digests_rotate_with_the_same_overlap_window():
+    both = f"{_sha256('old-token')}, {_sha256('new-token')}"
+    client = _service_app({"MIB_SERVICE_TOKEN_SHA256_MIB_AI": both}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="old-token").status_code == 200
+    assert _call(client, name="mib-ai", token="new-token").status_code == 200
+
+
+def test_a_digest_and_a_token_for_one_caller_are_both_accepted():
+    """A service can be moved to the digest form without breaking a token still configured."""
+    client = _service_app(
+        {
+            "MIB_SERVICE_TOKEN_MIB_AI": "old-token",
+            "MIB_SERVICE_TOKEN_SHA256_MIB_AI": _sha256("new-token"),
+        },
+        ["mib-ai"],
+    )
+    assert _call(client, name="mib-ai", token="old-token").status_code == 200
+    assert _call(client, name="mib-ai", token="new-token").status_code == 200
+
+
+def test_a_digest_variable_is_not_read_as_a_caller_named_sha256():
+    """The digest prefix starts with the token prefix; it must not register `sha256-mib-ai`."""
+    env = {"MIB_SERVICE_TOKEN_SHA256_MIB_AI": _sha256("ai-secret")}
+    client = _service_app(env, ["sha256-mib-ai"])
+    assert _call(client, name="sha256-mib-ai", token="ai-secret").status_code == 403
+
+
+def test_an_empty_digest_variable_configures_nothing():
+    client = _service_app({"MIB_SERVICE_TOKEN_SHA256_MIB_AI": " , "}, ["mib-ai"])
+    assert _call(client, name="mib-ai", token="").status_code == 403
+    assert _call(client, name="mib-ai", token=_sha256("")).status_code == 403
