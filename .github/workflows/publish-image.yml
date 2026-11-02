@@ -11,6 +11,10 @@ name: Publish image
 # mib-infra's MIB_<SERVICE>_TAG values and scripts/deploy.sh were updated to
 # match, rather than stripping the "v" here, so the format is consistent
 # with the git tagging convention across every repo.
+#
+# `:latest` moves only on a release tag. A pre-release (v0.4.0-alpha.1,
+# v0.4.0-rc.1) has a `-` in its name and gets its own tag alone, so it can
+# never become what an unpinned pull resolves to.
 
 on:
   workflow_call:
@@ -52,7 +56,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/mib-devs/${{ inputs.image }}:${{ github.ref_name }}
-            ghcr.io/mib-devs/${{ inputs.image }}:latest
+            ${{ !contains(github.ref_name, '-') && format('ghcr.io/mib-devs/{0}:latest', inputs.image) || '' }}
 
       - name: Report the resolvable digest
         # NFR-46 wants images digest-pinned in production; this is the digest
