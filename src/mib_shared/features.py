@@ -57,6 +57,7 @@ USER_FEATURES = frozenset(
         "user.pricing",
         "user.signup",
         "user.reading_pdf",
+        "user.translate",
     }
 )
 FEATURES = ADMIN_FEATURES | USER_FEATURES
