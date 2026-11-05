@@ -1,9 +1,12 @@
+import asyncio
+import time
+
 import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from mib_shared.http_client import TracedAsyncClient
+from mib_shared.http_client import RetryPolicy, TracedAsyncClient
 from mib_shared.keys import JWKSCache, KeyUnavailable, StaticKey
 
 
@@ -302,3 +305,158 @@ async def test_the_lifetime_follows_the_latest_response(monkeypatch):
     clock.now += 300
     await cache.get("key-1")
     assert identity.calls == 2
+
+
+INTERVAL = 0.05
+
+
+async def _until(condition, timeout: float = 2.0) -> bool:
+    """Poll `condition` until it holds or `timeout` passes."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        await asyncio.sleep(0.005)
+    return condition()
+
+
+@pytest.mark.anyio
+async def test_a_warm_that_missed_keeps_trying_until_identity_answers():
+    """A service started just before identity becomes ready without a request (FR-SSO-02)."""
+    identity = FakeIdentity("key-1")
+    identity.status = 503
+    cache = identity.cache(min_refresh_interval=INTERVAL)
+
+    assert await cache.warm() is False
+    await asyncio.sleep(INTERVAL * 3)
+    assert not cache.has_keys
+    identity.status = 200
+
+    assert await _until(lambda: cache.has_keys)
+    await cache.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("body", [{"keys": []}, {"keys": "not-a-list"}])
+async def test_an_empty_or_unparseable_document_keeps_the_retrying(body):
+    identity = FakeIdentity("key-1")
+    identity.body = body
+    cache = identity.cache(min_refresh_interval=INTERVAL)
+
+    assert await cache.warm() is False
+    await asyncio.sleep(INTERVAL * 4)
+
+    assert identity.calls > 1
+    assert not cache.has_keys
+    identity.body = None
+    assert await _until(lambda: cache.has_keys)
+    await cache.aclose()
+
+
+@pytest.mark.anyio
+async def test_the_retrying_stops_after_the_first_success():
+    identity = FakeIdentity("key-1")
+    identity.status = 503
+    cache = identity.cache(min_refresh_interval=INTERVAL)
+    await cache.warm()
+    identity.status = 200
+    assert await _until(lambda: cache.has_keys)
+    calls = identity.calls
+
+    await asyncio.sleep(INTERVAL * 3)
+
+    assert identity.calls == calls
+    assert await _until(lambda: cache._retry_task is None or cache._retry_task.done())
+    await cache.aclose()
+
+
+@pytest.mark.anyio
+async def test_a_warm_that_succeeds_starts_no_background_task():
+    identity = FakeIdentity("key-1")
+    cache = identity.cache(min_refresh_interval=INTERVAL)
+
+    assert await cache.warm() is True
+    assert cache._retry_task is None
+    await asyncio.sleep(INTERVAL * 3)
+    assert identity.calls == 1
+
+
+@pytest.mark.anyio
+async def test_attempts_are_a_full_interval_apart_even_when_a_request_fetched_between():
+    identity = FakeIdentity("key-1")
+    identity.status = 503
+    stamps: list[float] = []
+    inner = identity.transport().handler
+
+    def stamped(request: httpx.Request) -> httpx.Response:
+        stamps.append(time.monotonic())
+        return inner(request)
+
+    client = TracedAsyncClient(
+        "http://identity.test/jwks",
+        transport=httpx.MockTransport(stamped),
+        retry=RetryPolicy(attempts=1),
+    )
+    cache = JWKSCache(
+        jwks_url="http://identity.test/jwks", client=client, min_refresh_interval=INTERVAL
+    )
+    await cache.warm()
+    await asyncio.sleep(INTERVAL * 0.6)
+    with pytest.raises(KeyUnavailable):
+        await cache.get("key-1")
+    await asyncio.sleep(INTERVAL * 4)
+    await cache.aclose()
+
+    after_request = stamps[1:]
+    assert len(after_request) >= 3
+    gaps = [b - a for a, b in zip(after_request, after_request[1:], strict=False)]
+    assert all(gap >= INTERVAL * 0.9 for gap in gaps)
+
+
+@pytest.mark.anyio
+async def test_aclose_while_retrying_returns_at_once_and_leaves_no_task():
+    identity = FakeIdentity("key-1")
+    identity.status = 503
+    cache = identity.cache(min_refresh_interval=60)
+    await cache.warm()
+    task = cache._retry_task
+    assert task is not None and not task.done()
+
+    started = time.monotonic()
+    await cache.aclose()
+
+    assert time.monotonic() - started < 1
+    assert task.done() and task.cancelled()
+    assert cache._retry_task is None
+
+
+@pytest.mark.anyio
+async def test_identity_failing_after_a_success_keeps_the_cached_keys():
+    identity = FakeIdentity("key-1")
+    identity.status = 503
+    cache = identity.cache(min_refresh_interval=INTERVAL)
+    await cache.warm()
+    identity.status = 200
+    assert await _until(lambda: cache.has_keys)
+
+    identity.status = 503
+    await asyncio.sleep(INTERVAL * 3)
+
+    assert cache.has_keys
+    assert await cache.get("key-1") is not None
+    await cache.aclose()
+
+
+@pytest.mark.anyio
+async def test_the_readiness_check_makes_no_outbound_call():
+    identity = FakeIdentity("key-1")
+    identity.status = 503
+    cache = identity.cache(min_refresh_interval=60)
+    await cache.warm()
+    calls = identity.calls
+
+    for _ in range(5):
+        assert cache.has_keys is False
+
+    assert identity.calls == calls
+    await cache.aclose()

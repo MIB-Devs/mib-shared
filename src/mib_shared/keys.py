@@ -17,6 +17,7 @@ traps:
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass, field
@@ -82,6 +83,7 @@ class JWKSCache:
     _ttl: float = field(default=0.0, init=False)
     _last_attempt: float = field(default=0.0, init=False)
     _lock: anyio.Lock = field(default_factory=anyio.Lock, init=False)
+    _retry_task: asyncio.Task[None] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         """Strip the trailing slash (FastAPI 307s ``/jwks/`` away and the fetch does not follow) and
@@ -118,12 +120,34 @@ class JWKSCache:
 
         Also removes a first-request cost — otherwise the first authenticated
         request of a deploy pays for the fetch.
+
+        A miss is not final: a background task tries again every ``min_refresh_interval`` until
+        keys are held, then ends, so a service started a moment before identity becomes ready
+        without a restart or a request carrying a token. ``aclose`` cancels it.
         """
         try:
             await self._refresh()
         except Exception as exc:  # pragma: no cover - _refresh already fails soft
             logger.warning("jwks_warmup_failed", url=self.jwks_url, error=type(exc).__name__)
+        if not self.has_keys and self._retry_task is None:
+            self._retry_task = asyncio.create_task(self._retry_until_keys())
         return self.has_keys
+
+    async def _retry_until_keys(self) -> None:
+        """Attempt a fetch once ``min_refresh_interval`` has passed since the last attempt, whoever
+        made it, until keys are held. Makes no call from ``/ready``; the probe still reads a flag.
+        """
+        while not self.has_keys:
+            wait = self._last_attempt + self.min_refresh_interval - time.monotonic()
+            if wait > 0:
+                await anyio.sleep(wait)
+                continue
+            try:
+                await self._refresh(background=True)
+            except Exception as exc:  # pragma: no cover - _refresh already fails soft
+                logger.warning("jwks_retry_failed", url=self.jwks_url, error=type(exc).__name__)
+                await anyio.sleep(self.min_refresh_interval)
+        logger.info("jwks_retry_done", url=self.jwks_url)
 
     async def get(self, kid: str | None) -> PyJWK:
         """The key for this ``kid``, fetching only when it might help.
@@ -155,7 +179,7 @@ class JWKSCache:
             return next(iter(self._keys.values()))
         return None
 
-    async def _refresh(self, *, unknown_kid: bool = False) -> None:
+    async def _refresh(self, *, unknown_kid: bool = False, background: bool = False) -> None:
         """Fetch and replace the cached keys, under the lock.
 
         A fresh cache stops the refresh unless the kid was unknown, so rotation works. Rate limited
@@ -164,13 +188,15 @@ class JWKSCache:
         followed
         (#36). On a failed, unparseable or empty response it keeps verifying with the cached keys:
         an identity outage must not take every service's authentication with it. A fetched set
-        replaces the cache rather than merging, so a removed key stops being accepted.
+        replaces the cache rather than merging, so a removed key stops being accepted. The startup
+        retry (``background``) keeps the cooldown even with nothing cached, so it never fetches
+        right behind an attempt a request made.
         """
         async with self._lock:
             if self._keys and not self._expired and not unknown_kid:
                 return
             since_attempt = time.monotonic() - self._last_attempt
-            if self._keys and since_attempt < self.min_refresh_interval:
+            if (self._keys or background) and since_attempt < self.min_refresh_interval:
                 return
             self._last_attempt = time.monotonic()
 
@@ -239,6 +265,10 @@ class JWKSCache:
         return keys
 
     async def aclose(self) -> None:
+        task, self._retry_task = self._retry_task, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         if self._client is not None:
             await self._client.aclose()
 
