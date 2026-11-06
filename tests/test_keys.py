@@ -431,6 +431,43 @@ async def test_aclose_while_retrying_returns_at_once_and_leaves_no_task():
 
 
 @pytest.mark.anyio
+async def test_aclose_from_another_loop_than_the_one_that_warmed_it_does_not_raise():
+    """A module-level cache outlives each test client's event loop (mib-regulations#141): the
+    retry task is still pending in a stopped loop when another loop closes the cache."""
+    identity = FakeIdentity("key-1")
+    identity.status = 503
+    cache = identity.cache(min_refresh_interval=60)
+
+    def warm_in_own_loop() -> asyncio.AbstractEventLoop:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(cache.warm())
+        return loop
+
+    other_loop = await asyncio.to_thread(warm_in_own_loop)
+    try:
+        await cache.aclose()
+    finally:
+        other_loop.close()
+
+    assert cache._retry_task is None
+
+
+@pytest.mark.anyio
+async def test_warm_in_a_new_loop_replaces_a_retry_task_left_by_a_closed_one():
+    identity = FakeIdentity("key-1")
+    identity.status = 503
+    cache = identity.cache(min_refresh_interval=60)
+    await asyncio.to_thread(asyncio.run, cache.warm())
+    stale = cache._retry_task
+
+    await cache.warm()
+
+    assert cache._retry_task is not stale
+    assert not cache._retry_task.done()
+    await cache.aclose()
+
+
+@pytest.mark.anyio
 async def test_identity_failing_after_a_success_keeps_the_cached_keys():
     identity = FakeIdentity("key-1")
     identity.status = 503
