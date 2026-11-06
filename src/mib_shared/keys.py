@@ -129,9 +129,15 @@ class JWKSCache:
             await self._refresh()
         except Exception as exc:  # pragma: no cover - _refresh already fails soft
             logger.warning("jwks_warmup_failed", url=self.jwks_url, error=type(exc).__name__)
-        if not self.has_keys and self._retry_task is None:
+        if not self.has_keys and self._retry_task_is_stale():
             self._retry_task = asyncio.create_task(self._retry_until_keys())
         return self.has_keys
+
+    def _retry_task_is_stale(self) -> bool:
+        """No retry task, or one that is over or whose event loop has been closed (a cache that
+        outlives its loop, as a module-level one does across test clients)."""
+        task = self._retry_task
+        return task is None or task.done() or task.get_loop().is_closed()
 
     async def _retry_until_keys(self) -> None:
         """Attempt a fetch once ``min_refresh_interval`` has passed since the last attempt, whoever
@@ -267,8 +273,12 @@ class JWKSCache:
     async def aclose(self) -> None:
         task, self._retry_task = self._retry_task, None
         if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            loop = task.get_loop()
+            if loop is asyncio.get_running_loop():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            elif not loop.is_closed():
+                loop.call_soon_threadsafe(task.cancel)
         if self._client is not None:
             await self._client.aclose()
 
