@@ -140,9 +140,9 @@ class GenerationCaller:
         `model` overrides the caller's default for one call; `json_output` asks the model
         for JSON, which the caller still validates. Any JSON value satisfies that mode, and
         `qwen3.7-flash` answered with a bare list (`[2025]`) in up to a third of long calls
-        (mib-ai, 8 Nov 2026); `json_schema` (a JSON Schema, sent strict) makes the reply match it and
-        takes precedence over `json_output`. `thinking` overrides the
-        caller's for one call: Qwen3 models reason before they answer unless told not to
+        (mib-ai, 8 Nov 2026); `json_schema` (a JSON Schema, sent strict) makes the reply
+        match it and takes precedence over `json_output`. `thinking` overrides the caller's
+        for one call: Qwen3 models reason before they answer unless told not to
         (`enable_thinking`), which made a small schema several times slower and a summary
         not finish in 90 s. `timeout` overrides the caller's for one call.
 
