@@ -158,6 +158,28 @@ def test_one_call_can_name_its_own_model_and_ask_for_json():
     assert "response_format" not in seen[1]
 
 
+def test_a_schema_is_sent_strict_and_wins_over_plain_json():
+    seen: list[dict] = []
+    schema = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return reply("{}")
+
+    caller = build(handler)
+
+    async def run():
+        async with caller:
+            await caller.complete(system="s", user="u", json_output=True, json_schema=schema)
+
+    anyio.run(run)
+
+    assert seen[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "reply", "strict": True, "schema": schema},
+    }
+
+
 def test_thinking_is_off_unless_the_caller_or_the_call_turns_it_on():
     seen: list[dict] = []
 

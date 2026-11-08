@@ -81,6 +81,7 @@ never a moved tag.
 | `0.17.0` | A receiver can hold the SHA-256 of a caller's service token instead of the token: `MIB_SERVICE_TOKEN_SHA256_<NAME>` (comma-separated for a rotation overlap). A compromised receiver no longer holds a credential it can present as that caller. `MIB_SERVICE_TOKEN_<NAME>` is still accepted, so each service moves over on its own (`mib-infra#114`) |
 | `0.17.1` | `JWKSCache.warm()` that found no keys no longer leaves the process not-ready until a restart: a background task retries once per `min_refresh_interval` (no backoff, never ahead of an attempt a request made) until keys load, then ends; `aclose()` cancels it. `/ready` still reads a flag and makes no call; `has_keys`, fail-static and the TTL are unchanged (`mib-shared#47`, FR-SSO-02, FR-BE-18) |
 | `0.17.2` | `JWKSCache.aclose()` no longer raises "attached to a different loop" when the retry task belongs to another event loop (a module-level cache shut down by a later test client): it cancels that task thread-safely instead of awaiting it, and `warm()` replaces a retry task left by a closed loop (`mib-shared#47`, `mib-regulations#141`) |
+| `0.18.0` | `GenerationCaller.complete(json_schema=...)` sends `response_format: {"type": "json_schema", "strict": true}`, so the reply must match the schema. `json_output` (`json_object`) accepts any JSON value, and `qwen3.7-flash` answered the mib-ai chat with a bare list (`[2025]`) in up to a third of long calls; with the answer schema it returned the object in 90 of 90 |
 
 ### Migrating to a published wheel later
 
