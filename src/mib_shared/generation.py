@@ -131,13 +131,17 @@ class GenerationCaller:
         user: str,
         model: str | None = None,
         json_output: bool = False,
+        json_schema: dict[str, object] | None = None,
         thinking: bool | None = None,
         timeout: float | None = None,
     ) -> Completion:
         """One chat-completions call. Returns the assistant message's content and its usage.
 
         `model` overrides the caller's default for one call; `json_output` asks the model
-        for a single JSON object, which the caller still validates. `thinking` overrides the
+        for JSON, which the caller still validates. Any JSON value satisfies that mode, and
+        `qwen3.7-flash` answered with a bare list (`[2025]`) in up to a third of long calls
+        (mib-ai, 8 Nov 2026); `json_schema` (a JSON Schema, sent strict) makes the reply match it and
+        takes precedence over `json_output`. `thinking` overrides the
         caller's for one call: Qwen3 models reason before they answer unless told not to
         (`enable_thinking`), which made a small schema several times slower and a summary
         not finish in 90 s. `timeout` overrides the caller's for one call.
@@ -152,7 +156,12 @@ class GenerationCaller:
                 {"role": "user", "content": user},
             ],
         }
-        if json_output:
+        if json_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "reply", "strict": True, "schema": json_schema},
+            }
+        elif json_output:
             payload["response_format"] = {"type": "json_object"}
         if self._temperature is not None:
             payload["temperature"] = self._temperature
