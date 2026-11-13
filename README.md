@@ -82,6 +82,7 @@ never a moved tag.
 | `0.17.1` | `JWKSCache.warm()` that found no keys no longer leaves the process not-ready until a restart: a background task retries once per `min_refresh_interval` (no backoff, never ahead of an attempt a request made) until keys load, then ends; `aclose()` cancels it. `/ready` still reads a flag and makes no call; `has_keys`, fail-static and the TTL are unchanged (`mib-shared#47`, FR-SSO-02, FR-BE-18) |
 | `0.17.2` | `JWKSCache.aclose()` no longer raises "attached to a different loop" when the retry task belongs to another event loop (a module-level cache shut down by a later test client): it cancels that task thread-safely instead of awaiting it, and `warm()` replaces a retry task left by a closed loop (`mib-shared#47`, `mib-regulations#141`) |
 | `0.18.0` | `GenerationCaller.complete(json_schema=...)` sends `response_format: {"type": "json_schema", "strict": true}`, so the reply must match the schema. `json_output` (`json_object`) accepts any JSON value, and `qwen3.7-flash` answered the mib-ai chat with a bare list (`[2025]`) in up to a third of long calls; with the answer schema it returned the object in 90 of 90 |
+| `0.19.0` | `make_slug(text, *, fallback, max_length=120)`: one rule that turns a title into a URL slug (ASCII, diacritics folded, runs of other characters become one `-`, cut on a `-`, `fallback` then `dokumen` when nothing is left). Pure; uniqueness is the caller's job |
 
 ### Migrating to a published wheel later
 
